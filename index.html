@@ -1,0 +1,1205 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Segment Explorer</title>
+<script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0e0e12;
+    --surface:  #16161c;
+    --border:   #2a2a35;
+    --accent:   #7c6af7;
+    --accent2:  #4fd0a0;
+    --text:     #dcdce8;
+    --muted:    #7a7a95;
+    --on:       #4fd0a0;
+    --off:      #f76a6a;
+    --zero:     #3a3a4a;
+    --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+    font-size: 14px;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* â”€â”€ Header â”€â”€ */
+  header {
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+  }
+  header h1 { font-size: 16px; font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+  header .subtitle { color: var(--muted); font-size: 12px; }
+
+  #search-wrap {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0 12px;
+    height: 36px;
+    min-width: 280px;
+  }
+  #search-wrap svg { color: var(--muted); flex-shrink: 0; }
+  #search {
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 14px;
+    width: 100%;
+  }
+  #search::placeholder { color: var(--muted); }
+  #count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  /* â”€â”€ Layout â”€â”€ */
+  main {
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    overflow: hidden;
+  }
+
+  /* â”€â”€ Results list â”€â”€ */
+  #results {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #seg-table-wrap {
+    overflow-y: auto;
+    flex: 1;
+    scroll-behavior: smooth;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  thead th:hover { color: var(--text); }
+  thead th.sorted { color: var(--accent); }
+  thead th.sorted::after { content: ' â†•'; }
+
+  tbody tr {
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background .1s;
+  }
+  tbody tr:hover    { background: #1e1e28; }
+  tbody tr.selected { background: #1e1a3a; }
+  tbody td {
+    padding: 7px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+  }
+  .source-col { font-family: var(--font-mono); color: var(--accent2); }
+  .forte    { font-family: var(--font-mono); font-size: 11px; }
+  .steps    { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bpm      { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .no-results {
+    padding: 48px 20px;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  /* â”€â”€ Detail pane â”€â”€ */
+  #detail {
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+
+  #detail .placeholder {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    gap: 8px;
+    text-align: center;
+  }
+  #detail .placeholder svg { opacity: .25; }
+
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .detail-header h2 {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    color: var(--accent2);
+  }
+  .forte-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: #1e1a3a;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .meta-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .meta-card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .meta-card .value { font-size: 16px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .section-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 8px;
+    margin-top: 20px;
+  }
+  .section-label:first-of-type { margin-top: 0; }
+
+  /* â”€â”€ Sequence preview â”€â”€ */
+  .seq-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 20px;
+  }
+  .step-chip {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
+  }
+  .step-zero    { background: #1a1a24; border-color: var(--zero); color: var(--muted); }
+  .step-pos     { background: #0f2a20; border-color: var(--on);   color: var(--on); }
+  .step-neg     { background: #2a0f12; border-color: var(--off);  color: var(--off); }
+
+  /* â”€â”€ Full record section â”€â”€ */
+  .load-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .load-btn:hover   { background: #1e1a3a; }
+  .load-btn:disabled { opacity: .4; cursor: default; }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+    white-space: nowrap;
+  }
+  .copy-btn:hover:not(:disabled) { color: var(--accent2); border-color: var(--accent2); background: #0f2a20; }
+  .copy-btn:disabled { opacity: .35; cursor: default; }
+  .copy-btn.copied   { color: var(--accent2); border-color: var(--accent2); }
+
+  .seq-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    margin-top: 20px;
+  }
+  .seq-section-header .section-label { margin: 0; }
+
+  .full-seq-wrap {
+    margin-top: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  .full-seq-inner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* â”€â”€ Piano roll â”€â”€ */
+  .piano-roll-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #16161c;
+    margin-bottom: 12px;
+  }
+  .piano-roll-wrap canvas { display: block; }
+  .piano-roll-info {
+    font-size: 10px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    padding: 3px 8px 4px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  /* â”€â”€ Play button â”€â”€ */
+  .play-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .15s, color .15s;
+    line-height: 1;
+    margin-left: 8px;
+  }
+  .play-btn:hover:not(:disabled) { background: #1e1a3a; }
+  .play-btn:disabled { opacity: .4; cursor: default; }
+
+  /* â”€â”€ Inline segments section â”€â”€ */
+  .segs-section { display: none; }
+
+  /* â”€â”€ Filter panel â”€â”€ */
+  #filter-panel {
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .filter-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .filter-row label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: nowrap;
+  }
+  .filter-row select,
+  .filter-row input[type=text],
+  .filter-row input[type=number] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 3px 7px;
+    outline: none;
+    min-width: 0;
+  }
+  .filter-row select { flex: 1 1 120px; }
+  .filter-row input[type=text]   { flex: 1 1 120px; }
+  .filter-row input[type=number] { width: 64px; }
+  .filter-row input:focus,
+  .filter-row select:focus { border-color: var(--accent); }
+
+  /* â”€â”€ Pagination â”€â”€ */
+  #pagination {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .page-btn {
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .page-btn:disabled { opacity: .35; cursor: default; }
+  #page-info { flex: 1; text-align: center; }
+
+  /* â”€â”€ Generator panel â”€â”€ */
+  #gen-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+    white-space: nowrap;
+  }
+  #gen-toggle:hover { background: #1e1a3a; }
+
+  #gen-panel {
+    display: none;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding: 12px 20px;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #gen-panel.open { display: flex; }
+
+  #gen-panel label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+
+  #gen-panel select,
+  #gen-panel input[type=range] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 4px 8px;
+    outline: none;
+  }
+  #gen-panel select { min-width: 160px; }
+  #gen-panel input[type=range] { width: 140px; accent-color: var(--accent); }
+
+  #gen-btn {
+    padding: 7px 18px;
+    border-radius: 6px;
+    border: 1px solid var(--accent2);
+    background: transparent;
+    color: var(--accent2);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+    white-space: nowrap;
+  }
+  #gen-btn:hover:not(:disabled) { background: #0f2a20; }
+  #gen-btn:disabled { opacity: .4; cursor: default; }
+
+  #gen-result {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #gen-result a {
+    color: var(--accent2);
+    text-decoration: none;
+    font-weight: 600;
+    border: 1px solid var(--accent2);
+    padding: 4px 12px;
+    border-radius: 5px;
+    transition: background .15s;
+  }
+  #gen-result a:hover { background: #0f2a20; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Segment Explorer</h1>
+    <div class="subtitle" id="total-label">Loadingâ€¦</div>
+  </div>
+  <div id="count"></div>
+  <button id="gen-toggle" title="Ambient Song Generator">âš¡ Generate</button>
+</header>
+
+<div id="gen-panel">
+  <div>
+    <label for="gen-forte">Source Scale (Forte)</label><br>
+    <select id="gen-forte"><option value="">Random</option></select>
+  </div>
+  <div>
+    <label for="gen-output-forte">Output Scale</label><br>
+    <select id="gen-output-forte" disabled><option value="">Same as source</option></select>
+  </div>
+  <div>
+    <label for="gen-bpm">BPM <span id="gen-bpm-label">random</span></label><br>
+    <input id="gen-bpm" type="range" min="0" max="200" value="0" step="1">
+  </div>
+  <div>
+    <label for="gen-voices">Max Voices <span id="gen-voices-label">3</span></label><br>
+    <input id="gen-voices" type="range" min="1" max="15" value="3" step="1">
+  </div>
+  <div>
+    <label for="gen-dur">Duration <span id="gen-dur-label">2 min</span></label><br>
+    <input id="gen-dur" type="range" min="30" max="36000" value="120" step="30">
+  </div>
+  <button id="gen-btn">Generate Ambient Song</button>
+  <div id="gen-result"></div>
+</div>
+
+<main>
+  <!-- â”€â”€ Segments panel â”€â”€ -->
+  <section id="results">
+    <!-- Filter controls -->
+    <div id="filter-panel">
+      <div class="filter-row">
+        <label for="f-forte">Scale</label>
+        <select id="f-forte"><option value="">All Fortes</option></select>
+        <label for="f-source">Source</label>
+        <select id="f-source"><option value="">All Sources</option></select>
+      </div>
+      <div class="filter-row">
+        <label for="f-search">Search</label>
+        <input id="f-search" type="text" placeholder="source filenameâ€¦" autocomplete="off">
+        <label for="f-min-steps">Steps</label>
+        <input id="f-min-steps" type="number" placeholder="min" min="0">
+        <span style="color:var(--muted)">â€“</span>
+        <input id="f-max-steps" type="number" placeholder="max" min="0">
+      </div>
+      <div class="filter-row">
+        <label for="f-min-bpm">BPM</label>
+        <input id="f-min-bpm" type="number" placeholder="min" min="0">
+        <span style="color:var(--muted)">â€“</span>
+        <input id="f-max-bpm" type="number" placeholder="max" min="0">
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div id="seg-table-wrap">
+      <div class="no-results" id="loading-msg">
+        <div class="spinner"></div>
+        <div style="margin-top:8px">Loadingâ€¦</div>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div id="pagination">
+      <button class="page-btn" id="page-prev">â—€ Prev</button>
+      <span id="page-info"></span>
+      <button class="page-btn" id="page-next">Next â–¶</button>
+    </div>
+  </section>
+
+  <section id="detail">
+    <div class="placeholder">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/>
+      </svg>
+      <div>Select a segment to inspect it</div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const LIMIT      = 100;
+let   currentPage  = 0;
+let   totalItems   = 0;
+let   pageTotal    = 0;      // filtered total from last fetch
+let   selectedId   = null;
+
+const filters = {
+  forte:    '',
+  source:   '',
+  q:        '',
+  minSteps: '',
+  maxSteps: '',
+  minBpm:   '',
+  maxBpm:   '',
+};
+
+const tableWrap  = document.getElementById('seg-table-wrap');
+const detailEl   = document.getElementById('detail');
+const totalLabel = document.getElementById('total-label');
+const countEl    = document.getElementById('count');
+const pageInfo   = document.getElementById('page-info');
+const pagePrev   = document.getElementById('page-prev');
+const pageNext   = document.getElementById('page-next');
+
+// â”€â”€ API helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function buildSegmentsUrl(page) {
+  const p = new URLSearchParams({ page, limit: LIMIT });
+  if (filters.forte)    p.set('forte',    filters.forte);
+  if (filters.source)   p.set('source',   filters.source);
+  if (filters.q)        p.set('q',        filters.q);
+  if (filters.minSteps) p.set('minSteps', filters.minSteps);
+  if (filters.maxSteps) p.set('maxSteps', filters.maxSteps);
+  if (filters.minBpm)   p.set('minBpm',   filters.minBpm);
+  if (filters.maxBpm)   p.set('maxBpm',   filters.maxBpm);
+  return `/api/segments?${p.toString()}`;
+}
+
+async function fetchPage(page) {
+  const r = await fetch(buildSegmentsUrl(page));
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function fetchSegment(id) {
+  const r = await fetch(`/api/segment?id=${id}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// â”€â”€ Render table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function renderTable(items, filteredTotal) {
+  pageTotal = filteredTotal;
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / LIMIT));
+
+  pageInfo.textContent = `Page ${currentPage + 1} of ${totalPages} Â· ${filteredTotal.toLocaleString()} segments`;
+  pagePrev.disabled = currentPage === 0;
+  pageNext.disabled = currentPage >= totalPages - 1;
+
+  if (!items.length) {
+    tableWrap.innerHTML = '<div class="no-results">No segments match these filters</div>';
+    return;
+  }
+
+  const rows = items.map(s => `
+    <tr data-id="${s.id}" class="${selectedId === s.id ? 'selected' : ''}">
+      <td style="color:var(--muted);font-variant-numeric:tabular-nums">${s.id}</td>
+      <td class="source-col" title="${escHtml(s.source)}">${escHtml(s.source)}</td>
+      <td class="forte">${escHtml(s.forte)}</td>
+      <td class="steps">${s.steps.toLocaleString()}</td>
+      <td class="bpm">${s.bpm.toFixed(1)}</td>
+      <td class="steps">${s.numerator}/${s.denominator}</td>
+    </tr>`).join('');
+
+  tableWrap.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>ID</th><th>Source</th><th>Forte</th>
+        <th>Steps</th><th>BPM</th><th>Sig</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  tableWrap.querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const id = Number(tr.dataset.id);
+      selectedId = id;
+      tableWrap.querySelectorAll('tbody tr').forEach(r => r.classList.remove('selected'));
+      tr.classList.add('selected');
+      showDetail(id);
+    });
+  });
+}
+
+// â”€â”€ Pagination â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+async function loadPage(page) {
+  currentPage = page;
+  tableWrap.innerHTML = '<div class="no-results"><span class="spinner"></span></div>';
+  try {
+    const { total, items } = await fetchPage(page);
+    renderTable(items, total);
+  } catch (err) {
+    tableWrap.innerHTML = `<div class="no-results" style="color:#f76a6a">${escHtml(String(err.message || err))}</div>`;
+  }
+}
+
+pagePrev.addEventListener('click', () => { if (currentPage > 0) loadPage(currentPage - 1); });
+pageNext.addEventListener('click', () => {
+  const totalPages = Math.max(1, Math.ceil(pageTotal / LIMIT));
+  if (currentPage < totalPages - 1) loadPage(currentPage + 1);
+});
+
+// â”€â”€ Filter wiring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+let filterTimer = null;
+function triggerFilter() {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { currentPage = 0; loadPage(0); }, 250);
+}
+
+document.getElementById('f-forte').addEventListener('change', e => {
+  filters.forte = e.target.value; triggerFilter();
+});
+document.getElementById('f-source').addEventListener('change', e => {
+  filters.source = e.target.value; triggerFilter();
+});
+document.getElementById('f-search').addEventListener('input', e => {
+  filters.q = e.target.value.trim(); triggerFilter();
+});
+document.getElementById('f-min-steps').addEventListener('input', e => {
+  filters.minSteps = e.target.value; triggerFilter();
+});
+document.getElementById('f-max-steps').addEventListener('input', e => {
+  filters.maxSteps = e.target.value; triggerFilter();
+});
+document.getElementById('f-min-bpm').addEventListener('input', e => {
+  filters.minBpm = e.target.value; triggerFilter();
+});
+document.getElementById('f-max-bpm').addEventListener('input', e => {
+  filters.maxBpm = e.target.value; triggerFilter();
+});
+
+// â”€â”€ Step chips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function stepClass(v) {
+  if (v === '0') return 'step-zero';
+  return BigInt(v) > 0n ? 'step-pos' : 'step-neg';
+}
+
+function chipHtml(v) {
+  const label = v === '0' ? 'Â·' : v;
+  return `<span class="step-chip ${stepClass(v)}" title="${escHtml(v)}">${escHtml(
+    label.length > 14 ? label.slice(0, 12) + 'â€¦' : label
+  )}</span>`;
+}
+
+// â”€â”€ Detail pane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function copyIcon() {
+  return `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
+    <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+  </svg>`;
+}
+
+function copySequence(seq) {
+  navigator.clipboard.writeText(seq.join(' ')).then(() => {
+    const btn = document.getElementById('copy-seq');
+    if (!btn) return;
+    btn.classList.add('copied');
+    btn.innerHTML = copyIcon() + ' Copied!';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = copyIcon() + ` Copy ${seq.length.toLocaleString()} integers`;
+    }, 2000);
+  });
+}
+
+function renderFullSeq(seq) {
+  const chips = seq.map(chipHtml).join('');
+  return `<div class="full-seq-wrap"><div class="full-seq-inner">${chips}</div></div>`;
+}
+
+async function showDetail(id) {
+  // Show skeleton while loading
+  detailEl.innerHTML = `
+    <div class="detail-header">
+      <span class="forte-badge" id="detail-forte-badge">â€¦</span>
+      <button class="play-btn" id="play-seg-btn" disabled title="Play">â–¶</button>
+      <a id="export-midi-btn" class="load-btn" href="#" title="Export .mid"
+         style="padding:5px 12px;font-size:12px">
+        â¬‡ Export MIDI
+      </a>
+    </div>
+    <div class="meta-grid" id="meta-grid">
+      <div class="meta-card"><div class="label">Loading</div><div class="value"><span class="spinner"></span></div></div>
+    </div>
+    <div class="section-label" style="margin-top:20px;margin-bottom:8px;">Piano Roll</div>
+    <div class="piano-roll-wrap" id="piano-roll-wrap">
+      <div style="padding:16px;color:var(--muted)"><span class="spinner"></span></div>
+    </div>
+    <div class="seq-section-header">
+      <span class="section-label">Sequence</span>
+      <button class="copy-btn" id="copy-seq" disabled>${copyIcon()} Copy</button>
+    </div>
+    <div id="seq-area"><div style="padding:16px;color:var(--muted)"><span class="spinner"></span></div></div>`;
+
+  let seg;
+  try {
+    seg = await fetchSegment(id);
+  } catch (err) {
+    detailEl.innerHTML = `<div style="padding:24px;color:#f76a6a">${escHtml(String(err.message || err))}</div>`;
+    return;
+  }
+
+  document.getElementById('detail-forte-badge').textContent = seg.forte;
+  document.getElementById('meta-grid').innerHTML = `
+    <div class="meta-card"><div class="label">ID</div><div class="value">${seg.id}</div></div>
+    <div class="meta-card"><div class="label">BPM</div><div class="value">${seg.bpm.toFixed(1)}</div></div>
+    <div class="meta-card"><div class="label">Steps</div><div class="value">${seg.steps.toLocaleString()}</div></div>
+    <div class="meta-card"><div class="label">Octave</div><div class="value">${seg.octave}</div></div>
+    <div class="meta-card"><div class="label">Time sig</div><div class="value">${seg.numerator}/${seg.denominator}</div></div>
+    <div class="meta-card"><div class="label">Trit range</div><div class="value">${seg.tritLo}â€“${seg.tritHi}</div></div>
+    <div class="meta-card" style="grid-column:1/-1"><div class="label">Source</div>
+      <div class="value" style="font-size:12px;font-family:var(--font-mono);color:var(--accent2)">${escHtml(seg.source)}</div>
+    </div>`;
+
+  // Export MIDI button
+  const exportBtn = document.getElementById('export-midi-btn');
+  exportBtn.href = `/api/export-midi?id=${seg.id}`;
+  exportBtn.download = `seg-${seg.id}-${seg.source.replace(/[^A-Za-z0-9._-]/g, '_')}.mid`;
+
+  // Piano roll
+  renderPianoRoll(document.getElementById('piano-roll-wrap'), seg.sequence);
+
+  // Sequence chips
+  document.getElementById('seq-area').innerHTML = renderFullSeq(seg.sequence);
+  const copyBtn = document.getElementById('copy-seq');
+  copyBtn.disabled = false;
+  copyBtn.innerHTML = copyIcon() + ` Copy ${seg.sequence.length.toLocaleString()} integers`;
+  copyBtn.addEventListener('click', () => copySequence(seg.sequence));
+
+  // Play button
+  const playBtn = document.getElementById('play-seg-btn');
+  playBtn.disabled = false;
+  playBtn.addEventListener('click', async () => {
+    if (isPlaying && currentPlayBtn === playBtn) { stopPlayback(); return; }
+    await startPlayback(seg.sequence, seg.forte, seg.bpm, seg.denominator, seg.octave, playBtn);
+  });
+}
+
+// â”€â”€ Piano Roll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function buildNoteBlocks(seq) {
+  const active = new Map();
+  const notes  = [];
+
+  for (let i = 0; i < seq.length; i++) {
+    if (seq[i] === '0') continue;
+    let n = BigInt(seq[i]);
+    let pos = 0;
+    while (n !== 0n) {
+      const r = n % 3n;
+      if (r === 1n || r === -2n) {
+        active.set(pos, i);
+        n = (n - 1n) / 3n;
+      } else if (r === 2n || r === -1n) {
+        if (active.has(pos)) { notes.push({ trit: pos, start: active.get(pos), end: i }); active.delete(pos); }
+        n = (n + 1n) / 3n;
+      } else {
+        n /= 3n;
+      }
+      pos++;
+    }
+  }
+  for (const [pos, st] of active) notes.push({ trit: pos, start: st, end: seq.length });
+  return notes;
+}
+
+function renderPianoRoll(wrap, seq) {
+  const notes = buildNoteBlocks(seq);
+  if (!notes.length) {
+    wrap.innerHTML = '<div style="padding:10px 12px;font-size:12px;color:var(--muted)">No note events to display</div>';
+    return;
+  }
+
+  const tritMin    = Math.min(...notes.map(n => n.trit));
+  const tritMax    = Math.max(...notes.map(n => n.trit));
+  const numRows    = tritMax - tritMin + 1;
+  const totalSteps = seq.length;
+
+  const ROW_H       = Math.max(2, Math.min(8, Math.floor(200 / numRows)));
+  const HEIGHT      = numRows * ROW_H;
+  const containerW  = wrap.clientWidth || 600;
+  const PX_PER_STEP = Math.max(0.25, containerW / totalSteps);
+  const WIDTH       = Math.round(totalSteps * PX_PER_STEP);
+
+  const canvas        = document.createElement('canvas');
+  canvas.width        = WIDTH;
+  canvas.height       = HEIGHT;
+  canvas.style.width  = WIDTH + 'px';
+  canvas.style.height = HEIGHT + 'px';
+  const ctx = canvas.getContext('2d');
+
+  for (let t = tritMin; t <= tritMax; t++) {
+    ctx.fillStyle = t % 2 === 0 ? '#18181f' : '#16161c';
+    ctx.fillRect(0, (tritMax - t) * ROW_H, WIDTH, ROW_H);
+  }
+  ctx.strokeStyle = '#2e2e42'; ctx.lineWidth = 1;
+  for (let t = Math.ceil(tritMin / 12) * 12; t <= tritMax; t += 12) {
+    const y = (tritMax - t) * ROW_H - 0.5;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WIDTH, y); ctx.stroke();
+  }
+  for (const note of notes) {
+    const x   = Math.round(note.start * PX_PER_STEP);
+    const y   = (tritMax - note.trit) * ROW_H;
+    const w   = Math.max(1, Math.round((note.end - note.start) * PX_PER_STEP));
+    const pct = numRows > 1 ? (note.trit - tritMin) / (numRows - 1) : 0.5;
+    ctx.fillStyle = `hsl(${Math.round(30 + pct * 155)},72%,58%)`;
+    ctx.fillRect(x, y + (ROW_H > 2 ? 1 : 0), w, ROW_H > 2 ? ROW_H - 1 : ROW_H);
+  }
+
+  const info = document.createElement('div');
+  info.className   = 'piano-roll-info';
+  info.textContent = `trit ${tritMin}â€“${tritMax} Â· ${totalSteps.toLocaleString()} steps Â· ${notes.length.toLocaleString()} notes`;
+  wrap.innerHTML = '';
+  wrap.appendChild(canvas);
+  wrap.appendChild(info);
+}
+
+// â”€â”€ Playback engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+let currentSynth   = null;
+let currentLimiter = null;
+let currentLoop    = null;
+let currentPlayBtn = null;
+let isPlaying      = false;
+let activeNotes    = [];
+let stepCounter    = 0;
+const scaleCache   = new Map();
+
+function toBT(n) {
+  if (n === 0n) return [0];
+  const trits = [];
+  let v = n;
+  while (v !== 0n) {
+    let r = Number(((v % 3n) + 3n) % 3n);
+    if (r === 2) { r = -1; v = (v + 1n) / 3n; }
+    else         { v = (v - BigInt(r)) / 3n; }
+    trits.push(r);
+  }
+  return trits;
+}
+
+async function getScale(forte) {
+  if (scaleCache.has(forte)) return scaleCache.get(forte);
+  const r = await fetch(`/api/scale?forte=${encodeURIComponent(forte)}`);
+  if (!r.ok) throw new Error(`Cannot load scale for "${forte}"`);
+  const { pitchClasses, k } = await r.json();
+  const scale = [];
+  for (const pc of pitchClasses) {
+    for (let oct = 0; oct <= 10; oct++) {
+      const midi = pc + 12 * oct;
+      if (midi < 128) scale.push(midi);
+    }
+  }
+  scale.sort((a, b) => a - b);
+  const result = { scale, k };
+  scaleCache.set(forte, result);
+  return result;
+}
+
+function computeTritEvents(sequence, scale, k, octave) {
+  const baseIdx = octave * k;
+  return sequence.map(val => {
+    const n = BigInt(val);
+    const trits = toBT(n);
+    const noteOns = [], noteOffs = [];
+    for (let t = 0; t < trits.length; t++) {
+      const trit = trits[t];
+      if (trit === 0) continue;
+      const scaleIdx = baseIdx + t;
+      if (scaleIdx < 0 || scaleIdx >= scale.length) continue;
+      const midiNote = scale[scaleIdx];
+      if (trit === 1) noteOns.push(midiNote);
+      else            noteOffs.push(midiNote);
+    }
+    return { noteOns, noteOffs };
+  });
+}
+
+function allNotesOff() {
+  if (activeNotes.length === 0) return;
+  if (currentSynth) {
+    try { currentSynth.triggerRelease(activeNotes.map(n => Tone.Frequency(n, 'midi').toFrequency())); } catch (e) {}
+  }
+  activeNotes = [];
+}
+
+function stopPlayback() {
+  if (currentLoop) { try { currentLoop.stop(); } catch (e) {} currentLoop = null; }
+  allNotesOff();
+  if (typeof Tone !== 'undefined') {
+    try { Tone.getTransport().stop(); Tone.getTransport().cancel(); Tone.getTransport().seconds = 0; } catch (e) {}
+  }
+  if (currentSynth) { try { currentSynth.disconnect(); currentSynth.dispose(); } catch (e) {} currentSynth = null; }
+  if (currentLimiter) { try { currentLimiter.dispose(); } catch (e) {} currentLimiter = null; }
+  isPlaying = false;
+  if (currentPlayBtn) { currentPlayBtn.textContent = 'â–¶'; currentPlayBtn = null; }
+}
+
+async function startPlayback(sequence, forte, bpm, denominator, octave, playBtn) {
+  if (typeof Tone === 'undefined') { alert('Tone.js failed to load.'); return; }
+  stopPlayback();
+  try {
+    await Tone.start();
+    const { scale, k } = await getScale(forte);
+    const quant = 60.0 / (bpm * denominator);
+    const tritEvents = computeTritEvents(sequence, scale, k, octave);
+
+    currentLimiter = new Tone.WaveShaper(x => Math.tanh(x)).toDestination();
+    currentSynth   = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'sine1' },
+      envelope: {
+        attackCurve: 'exponential', attack: quant / 2.0,
+        decay: 0, releaseCurve: 'exponential', release: quant / 2.0, sustain: 1.0,
+      },
+    }).connect(currentLimiter);
+    currentSynth.context.lookAhead = 0.05;
+
+    activeNotes = []; stepCounter = 0;
+    const transport = Tone.getTransport();
+    transport.cancel(); transport.bpm.value = bpm; transport.seconds = 0;
+
+    currentLoop = new Tone.Loop(when => {
+      const step = tritEvents[stepCounter % tritEvents.length];
+      if (!step) return;
+      const activeSet = new Set(activeNotes);
+      const toRelease = [];
+      for (const note of step.noteOffs) { if (activeSet.has(note)) { toRelease.push(note); activeSet.delete(note); } }
+      for (const note of step.noteOns)  { if (activeSet.has(note)) toRelease.push(note); activeSet.add(note); }
+      activeNotes = Array.from(activeSet).sort((a, b) => a - b);
+      const vel = Math.min(0.8, Math.max(0.05, 0.6 / Math.sqrt(Math.max(1, activeNotes.length))));
+      if (toRelease.length > 0) {
+        try { currentSynth.triggerRelease(toRelease.map(n => Tone.Frequency(n, 'midi').toFrequency()), when); } catch (e) {}
+      }
+      if (step.noteOns.length > 0) {
+        try { currentSynth.triggerAttack(step.noteOns.map(n => Tone.Frequency(n, 'midi').toFrequency()), when, vel); } catch (e) {}
+      }
+      stepCounter = (stepCounter + 1) % tritEvents.length;
+    }, quant);
+
+    currentLoop.start(0);
+    currentPlayBtn = playBtn; playBtn.textContent = 'â– '; isPlaying = true;
+    transport.start();
+  } catch (err) {
+    console.error('Playback error:', err);
+    stopPlayback();
+    if (playBtn) { playBtn.textContent = '!'; setTimeout(() => { playBtn.textContent = 'â–¶'; }, 2000); }
+  }
+}
+
+// â”€â”€ Ambient generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const genToggle      = document.getElementById('gen-toggle');
+const genPanel       = document.getElementById('gen-panel');
+const genForte       = document.getElementById('gen-forte');
+const genOutputForte = document.getElementById('gen-output-forte');
+const genBpm         = document.getElementById('gen-bpm');
+const genBpmLbl      = document.getElementById('gen-bpm-label');
+const genVoices      = document.getElementById('gen-voices');
+const genVoicesLbl   = document.getElementById('gen-voices-label');
+const genDur         = document.getElementById('gen-dur');
+const genDurLbl      = document.getElementById('gen-dur-label');
+const genBtn         = document.getElementById('gen-btn');
+const genResult      = document.getElementById('gen-result');
+let genForteOptions  = [];
+
+genToggle.addEventListener('click', () => genPanel.classList.toggle('open'));
+
+genForte.addEventListener('change', () => {
+  genOutputForte.innerHTML = '<option value="">Same as source</option>';
+  const sel = genForte.value;
+  if (!sel) { genOutputForte.disabled = true; return; }
+  const entry = genForteOptions.find(f => f.forte === sel);
+  if (!entry) { genOutputForte.disabled = true; return; }
+  const sameK = genForteOptions.filter(f => f.k === entry.k);
+  for (const f of sameK) {
+    const opt = document.createElement('option');
+    opt.value = f.forte;
+    opt.textContent = f.forte === sel ? `${f.forte}  (same, ${f.count} segs)` : `${f.forte}  (${f.count} segs)`;
+    genOutputForte.appendChild(opt);
+  }
+  genOutputForte.disabled = false;
+});
+
+genBpm.addEventListener('input', () => {
+  genBpmLbl.textContent = Number(genBpm.value) === 0 ? 'random' : genBpm.value;
+});
+genVoices.addEventListener('input', () => { genVoicesLbl.textContent = genVoices.value; });
+genDur.addEventListener('input', () => {
+  const s = Number(genDur.value);
+  if (s < 60) genDurLbl.textContent = `${s}s`;
+  else if (s < 3600) genDurLbl.textContent = `${(s / 60).toFixed(s % 60 ? 1 : 0)} min`;
+  else { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); genDurLbl.textContent = m > 0 ? `${h}h ${m}m` : `${h}h`; }
+});
+
+async function loadGenOptions() {
+  try {
+    const r = await fetch('/api/generate-options');
+    if (!r.ok) return;
+    const { fortes } = await r.json();
+    genForteOptions = fortes;
+    for (const f of fortes) {
+      const opt = document.createElement('option');
+      opt.value = f.forte;
+      opt.textContent = `${f.forte}  (k=${f.k}, ${f.count} segs)`;
+      genForte.appendChild(opt);
+    }
+  } catch {}
+}
+
+genBtn.addEventListener('click', async () => {
+  genBtn.disabled = true; genBtn.textContent = 'Generatingâ€¦';
+  genResult.innerHTML = '<span class="spinner"></span>';
+  try {
+    const body = { durationSeconds: Number(genDur.value) };
+    if (genForte.value) body.forte = genForte.value;
+    if (genOutputForte.value) body.outputForte = genOutputForte.value;
+    const bpmVal = Number(genBpm.value);
+    if (bpmVal >= 40) body.bpm = bpmVal;
+    body.maxVoices = Number(genVoices.value);
+    const r = await fetch('/api/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` })); throw new Error(err.error || `HTTP ${r.status}`); }
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const rForte = r.headers.get('X-Result-Forte') || '?';
+    const rBpm   = r.headers.get('X-Result-BPM')   || '?';
+    const rSegs  = r.headers.get('X-Result-Segments') || '?';
+    const safeName = rForte.replace(/[^A-Za-z0-9._-]/g, '_');
+    genResult.innerHTML = `
+      <span>Forte: <strong style="color:var(--accent)">${escHtml(rForte)}</strong></span>
+      <span>BPM: <strong>${escHtml(rBpm)}</strong></span>
+      <span>Segments: <strong>${escHtml(rSegs)}</strong></span>
+      <a href="${url}" download="ambient-${safeName}-${Date.now()}.mid">â¬‡ Download MIDI</a>`;
+  } catch (err) {
+    genResult.innerHTML = `<span style="color:#f76a6a">${escHtml(String(err.message || err))}</span>`;
+  } finally {
+    genBtn.disabled = false; genBtn.textContent = 'Generate Ambient Song';
+  }
+});
+
+// â”€â”€ Initialise â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+async function init() {
+  try {
+    // Load count + dropdown options in parallel
+    const [countRes, fortesRes, sourcesRes] = await Promise.all([
+      fetch('/api/count'),
+      fetch('/api/fortes'),
+      fetch('/api/sources'),
+    ]);
+    if (!countRes.ok) throw new Error(`HTTP ${countRes.status}`);
+    const { total } = await countRes.json();
+    totalItems = total;
+    totalLabel.textContent = `${total.toLocaleString()} segments`;
+
+    // Populate forte dropdown
+    if (fortesRes.ok) {
+      const fortes = await fortesRes.json();
+      const fSelect = document.getElementById('f-forte');
+      for (const { forte, count } of fortes) {
+        const o = document.createElement('option');
+        o.value = forte;
+        o.textContent = `${forte}  (${count.toLocaleString()})`;
+        fSelect.appendChild(o);
+      }
+    }
+
+    // Populate source dropdown
+    if (sourcesRes.ok) {
+      const sources = await sourcesRes.json();
+      const sSelect = document.getElementById('f-source');
+      for (const { source, count } of sources) {
+        const o = document.createElement('option');
+        o.value = source;
+        o.textContent = `${source}  (${count.toLocaleString()})`;
+        sSelect.appendChild(o);
+      }
+    }
+
+    document.getElementById('loading-msg')?.remove();
+    await loadPage(0);
+    loadGenOptions();
+  } catch (err) {
+    tableWrap.innerHTML = `<div class="no-results">
+      <strong style="color:#f76a6a">Cannot reach server</strong><br>
+      <span style="margin-top:6px;display:block">Run <code>npm run serve</code> first</span>
+    </div>`;
+    totalLabel.textContent = 'Error';
+  }
+}
+
+init();
+</script>
+</body>
+</html>
