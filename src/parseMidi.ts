@@ -13,6 +13,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import ToneMidi from '@tonejs/midi';
 const { Midi } = ToneMidi as unknown as { Midi: typeof import('@tonejs/midi').Midi };
+type MidiNote = InstanceType<typeof Midi>['tracks'][number]['notes'][number];
 import type { MidiFileInfo, NoteEvent, TrackData } from './types.ts';
 
 const MIN_NOTES    = 16;
@@ -22,7 +23,7 @@ const STEPS_PER_QN = 24;   // used only for density estimation
 export function parseMidiFile(
   filePath: string,
 ): { fileInfo: MidiFileInfo; tracks: TrackData[] } | null {
-  let midi: Midi;
+  let midi: InstanceType<typeof Midi>;
   try {
     midi = new Midi(readFileSync(filePath));
   } catch {
@@ -56,7 +57,7 @@ export function parseMidiFile(
     if (!track.notes.length) continue;
     if (track.channel === 9) continue;   // skip percussion
 
-    const notes: NoteEvent[] = track.notes.map(n => ({
+    const notes: NoteEvent[] = track.notes.map((n: MidiNote) => ({
       pitch:     n.midi,
       startTick: n.ticks,
       endTick:   n.ticks + n.durationTicks,

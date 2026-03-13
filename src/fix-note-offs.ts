@@ -1,25 +1,23 @@
 /**
- * fix-note-offs.ts — For every segment in MIDI_SEGMENTS.db, move any
- * note-off events (trit = −1) found at step 0 to the final step of the
- * sequence and merge them tritwise into that last step.
+ * fix-note-offs.ts — For every segment in MIDI_SEGMENTS.db, simulate
+ * playback to find notes that are still sounding at the end of the sequence,
+ * then append note-off events for those notes into the final step.
  *
  * Run:  npm run fix-note-offs
  *
  * What it does
  * ────────────
- *   Some segments currently start with step-0 note-offs so they can safely
- *   loop. This script rewrites each sequence so those note-offs live at the
- *   end of the segment instead.
+ *   Iterates every trit in every step of the sequence:
+ *     trit +1 at position P  →  note at P starts sounding
+ *     trit −1 at position P  →  note at P stops sounding
  *
- *   For every trit position P where step 0 contains −1:
- *     • step 0 at P is cleared
- *     • the final step is merged with −1 at P using single-trit semantics:
- *         0  + (−1) → −1
- *         1  + (−1) → 0
- *        −1  + (−1) → −1   (duplicate note-offs collapse)
+ *   After all steps have been processed, any position still sounding needs a
+ *   note-off merged into the final step:
+ *     current trit at P = 0   →  set to −1
+ *     current trit at P = +1  →  clear to 0  (note-on and note-off coalesce)
+ *     current trit at P = −1  →  already off, leave unchanged
  *
- *   Only the `sequence` column is modified; trit_lo / trit_hi / steps are
- *   unchanged because the rewrite only relocates existing step-level events.
+ *   Only the `sequence` column is modified.
  */
 
 import fs   from 'fs';
@@ -68,47 +66,43 @@ function encodeTrits(trits: Map<number, number>): string {
   return val.toString();
 }
 
-/** Positions that carry note-offs at step 0 and should be relocated. */
-function getLeadingNoteOffPositions(step0: string): number[] {
-  const trits = toBalancedTernary(BigInt(step0));
-  const positions: number[] = [];
-  for (let i = 0; i < trits.length; i++) {
-    if (trits[i] === -1) positions.push(i);
+/**
+ * Simulate playback through the full sequence.
+ * Returns the set of trit positions that are still sounding (note-on without
+ * a matching note-off) after the last step.
+ */
+function getSoundingAtEnd(sequence: string[]): Set<number> {
+  const sounding = new Set<number>();
+  for (const stepStr of sequence) {
+    if (stepStr === '0') continue;
+    const trits = toBalancedTernary(BigInt(stepStr));
+    for (let pos = 0; pos < trits.length; pos++) {
+      if      (trits[pos] ===  1) sounding.add(pos);
+      else if (trits[pos] === -1) sounding.delete(pos);
+    }
   }
-  return positions;
-}
-
-/** Remove note-offs from step 0, leaving note-ons and other positions intact. */
-function clearLeadingNoteOffs(step0: string, positions: number[]): string {
-  if (positions.length === 0) return step0;
-  const tritMap = parseTritMap(step0);
-  let changed = false;
-  for (const pos of positions) {
-    if (tritMap.get(pos) !== -1) continue;
-    tritMap.delete(pos);
-    changed = true;
-  }
-  return changed ? encodeTrits(tritMap) : step0;
+  return sounding;
 }
 
 /**
- * Merge relocated note-offs into the final step using the only states the
- * one-trit-per-position encoding can represent.
+ * Merge note-offs for every position in `sounding` into the last step string.
+ * Returns the (possibly unchanged) last step string.
  */
-function mergeIntoLastStep(lastStep: string, noteOffPositions: number[]): string {
-  if (noteOffPositions.length === 0) return lastStep;
+function addNoteOffs(lastStep: string, sounding: Set<number>): string {
+  if (sounding.size === 0) return lastStep;
   const tritMap = parseTritMap(lastStep);
-
-  for (const pos of noteOffPositions) {
+  let changed = false;
+  for (const pos of sounding) {
     const current = tritMap.get(pos) ?? 0;
+    if (current === -1) continue;          // already has note-off
     if (current === 1) {
-      tritMap.delete(pos);
-      continue;
+      tritMap.delete(pos);                 // note-on + note-off → coalesce to 0
+    } else {
+      tritMap.set(pos, -1);               // 0 → note-off
     }
-    tritMap.set(pos, -1);
+    changed = true;
   }
-
-  return encodeTrits(tritMap);
+  return changed ? encodeTrits(tritMap) : lastStep;
 }
 
 // ── Prepared statements ───────────────────────────────────────────────────────
@@ -156,16 +150,14 @@ while (offset < totalRows) {
     const sequence: string[] = JSON.parse(row.sequence);
     if (sequence.length === 0) continue;
 
-    const leadingNoteOffs = getLeadingNoteOffPositions(sequence[0]);
-    if (leadingNoteOffs.length === 0) continue;
+    const sounding = getSoundingAtEnd(sequence);
+    if (sounding.size === 0) continue;
 
-    const newStep0 = clearLeadingNoteOffs(sequence[0], leadingNoteOffs);
     const lastIndex = sequence.length - 1;
-    const newLastStep = mergeIntoLastStep(sequence[lastIndex], leadingNoteOffs);
+    const newLastStep = addNoteOffs(sequence[lastIndex], sounding);
 
-    if (newStep0 === sequence[0] && newLastStep === sequence[lastIndex]) continue;
+    if (newLastStep === sequence[lastIndex]) continue;
 
-    sequence[0] = newStep0;
     sequence[lastIndex] = newLastStep;
     updates.push({ id: row.id, sequence: JSON.stringify(sequence) });
     modified++;
