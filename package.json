@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "build-dataset": "tsx src/buildDataset.ts",
-    "fix-note-offs": "tsx src/fix-note-offs.ts",
     "serve": "tsx src/server.ts"
   },
   "dependencies": {

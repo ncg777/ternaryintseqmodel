@@ -12,7 +12,8 @@
  *   Stage 5  detectBoundaries — entropy / periodicity boundary detection
  *   Stage 6  alignSegment    — refine each segment start ±16 steps
  *   Stage 7  analyzePitches  — Forte resolution + scale-relative remapping
- *   Stage 8  createWriter    — batch insert into MIDI_SEGMENTS.db
+ *   Stage 8  fixNoteOffs     — ensure every note-on has a matching note-off in the loop
+ *   Stage 9  createWriter    — batch insert into MIDI_SEGMENTS.db
  *
  * Segment acceptance criteria:
  *   • length in steps : 16 – 512 (after trim)
@@ -33,6 +34,7 @@ import { detectBoundaries }  from './segmentDetector.ts';
 import { alignSegment }      from './segmentAligner.ts';
 import { analyzePitches }    from './pitchAnalyzer.ts';
 import { createWriter }      from './segmentWriter.ts';
+import { toBalancedTernary } from './utils.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT      = path.resolve(__dirname, '..');
@@ -59,6 +61,77 @@ function nonZeroFraction(seq: bigint[]): number {
   let nz = 0;
   for (const v of seq) if (v !== 0n) nz++;
   return nz / seq.length;
+}
+
+// ── Note-off repair helpers ───────────────────────────────────────────────────
+
+function parseTritMap(stepStr: string): Map<number, number> {
+  const trits = toBalancedTernary(BigInt(stepStr));
+  const map = new Map<number, number>();
+  for (let i = 0; i < trits.length; i++) {
+    if (trits[i] !== 0) map.set(i, trits[i]);
+  }
+  return map;
+}
+
+function encodeTrits(trits: Map<number, number>): string {
+  if (trits.size === 0) return '0';
+  let val = 0n;
+  for (const [pos, trit] of trits) {
+    if (trit === 0) continue;
+    val += BigInt(trit) * (3n ** BigInt(pos));
+  }
+  return val.toString();
+}
+
+/** Returns trit positions that are still sounding (note-on without note-off) at the end. */
+function getSoundingAtEnd(sequence: string[]): Set<number> {
+  const sounding = new Set<number>();
+  for (const stepStr of sequence) {
+    if (stepStr === '0') continue;
+    const trits = toBalancedTernary(BigInt(stepStr));
+    for (let pos = 0; pos < trits.length; pos++) {
+      if      (trits[pos] ===  1) sounding.add(pos);
+      else if (trits[pos] === -1) sounding.delete(pos);
+    }
+  }
+  return sounding;
+}
+
+/** Merge note-offs for all `sounding` positions into one step string. */
+function mergeNoteOffs(stepStr: string, sounding: Set<number>): string {
+  if (sounding.size === 0) return stepStr;
+  const tritMap = parseTritMap(stepStr);
+  let changed = false;
+  for (const pos of sounding) {
+    const current = tritMap.get(pos) ?? 0;
+    if (current === -1) continue;          // already off
+    if (current === 1) {
+      tritMap.delete(pos);                 // note-on + note-off coalesce to 0
+    } else {
+      tritMap.set(pos, -1);               // insert explicit note-off
+    }
+    changed = true;
+  }
+  return changed ? encodeTrits(tritMap) : stepStr;
+}
+
+/**
+ * Ensure every note-on in the segment has a matching note-off so the
+ * segment loops cleanly.  Note-offs are merged into the step immediately
+ * before the first non-zero step (circularly), keeping dead space tidy.
+ */
+function fixNoteOffs(sequence: string[]): string[] {
+  if (sequence.length === 0) return sequence;
+  const sounding = getSoundingAtEnd(sequence);
+  if (sounding.size === 0) return sequence;
+  const firstNZ   = sequence.findIndex(s => s !== '0');
+  const targetIdx = firstNZ <= 0
+    ? sequence.length - 1
+    : firstNZ - 1;
+  const result = sequence.slice();
+  result[targetIdx] = mergeNoteOffs(result[targetIdx], sounding);
+  return result;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -143,8 +216,9 @@ async function main(): Promise<void> {
 
         if (analysis.forte === '0-1.00') continue;  // no pitch content
 
+        const fixedSeq = fixNoteOffs(analysis.sequence);
         const absStart = alnStart + leadOffset;
-        const absEnd   = absStart + analysis.sequence.length;
+        const absEnd   = absStart + fixedSeq.length;
 
         writer.add({
           source:      fileInfo.filename,
@@ -157,8 +231,8 @@ async function main(): Promise<void> {
           bpm:         fileInfo.bpm,
           numerator:   fileInfo.numerator,
           denominator: fileInfo.denominator,
-          steps:       analysis.sequence.length,
-          sequence:    analysis.sequence,
+          steps:       fixedSeq.length,
+          sequence:    fixedSeq,
         });
       }
     }
