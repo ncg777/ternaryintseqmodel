@@ -6,6 +6,7 @@ dist/
 build/
 
 # Generated data files
+MIDI_SEGMENTS.db*
 features.jsonl
 analysis.json
 filename-index.json
