@@ -1,24 +1,24 @@
-﻿/**
- * server.ts â€” HTTP server backed by MIDI_SEGMENTS.db.
+/**
+ * server.ts — HTTP server backed by MIDI_SEGMENTS.db.
  *
  * Run:  npm run serve
  *       then open http://localhost:3000
  *
  * Endpoints
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€
- *   GET  /                                   â†’ index.html
- *   GET  /api/count                          â†’ { total: N }
- *   GET  /api/segments[?forte&source&q&      â†’ paginated segment metadata
+ * ─────────
+ *   GET  /                                   → index.html
+ *   GET  /api/count                          → { total: N }
+ *   GET  /api/segments[?forte&source&q&      → paginated segment metadata
  *                       minSteps&maxSteps&
  *                       minBpm&maxBpm&
  *                       page&limit]
- *   GET  /api/segment?id=N                   â†’ full segment (includes sequence)
- *   GET  /api/sources                        â†’ [{ source, count }]
- *   GET  /api/fortes                         â†’ [{ forte, count }]
- *   GET  /api/scale?forte=X                  â†’ { pitchClasses, k }
- *   GET  /api/export-midi?id=N               â†’ .mid file download
- *   GET  /api/generate-options               â†’ { fortes: [...] }
- *   POST /api/generate                       â†’ ambient .mid download
+ *   GET  /api/segment?id=N                   → full segment (includes sequence)
+ *   GET  /api/sources                        → [{ source, count }]
+ *   GET  /api/fortes                         → [{ forte, count }]
+ *   GET  /api/scale?forte=X                  → { pitchClasses, k }
+ *   GET  /api/export-midi?id=N               → .mid file download
+ *   GET  /api/generate-options               → { fortes: [...] }
+ *   POST /api/generate                       → ambient .mid download
  */
 
 import http from 'http';
@@ -45,7 +45,7 @@ const PORT       = 3000;
 const DEF_LIMIT  = 100;
 const MAX_LIMIT  = 500;
 
-// â”€â”€ Open database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Open database ─────────────────────────────────────────────────────────────
 
 if (!fs.existsSync(DB_PATH)) {
   console.error(`Database not found: ${DB_PATH}`);
@@ -53,11 +53,11 @@ if (!fs.existsSync(DB_PATH)) {
   process.exit(1);
 }
 
-console.log(`Opening ${DB_PATH} â€¦`);
+console.log(`Opening ${DB_PATH} …`);
 const db = new Database(DB_PATH, { readonly: true });
 db.pragma('journal_mode = WAL');
 
-// â”€â”€ Prepared statements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Prepared statements ───────────────────────────────────────────────────────
 
 interface SegRow {
   id:          number;
@@ -141,7 +141,7 @@ const stmtFortes = db.prepare<[], { forte: string; count: number }>(
   'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
 );
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function segMetaToJson(row: SegMetaRow) {
   return {
@@ -187,7 +187,7 @@ function parseQuery(url: string): Record<string, string> {
   return out;
 }
 
-// â”€â”€ MIDI export helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── MIDI export helpers ───────────────────────────────────────────────────────
 
 function writeVarLen(value: number): number[] {
   if (value < 0) value = 0;
@@ -283,7 +283,7 @@ function segmentToMidiEvents(
   return events;
 }
 
-// â”€â”€ Route handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Route handler ─────────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
   const url   = req.url ?? '/';
@@ -448,7 +448,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\nServer ready â†’ http://localhost:${PORT}`);
+  console.log(`\nServer ready → http://localhost:${PORT}`);
   console.log(`Database: ${DB_PATH}`);
 });
 
