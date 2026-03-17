@@ -41,6 +41,12 @@ export function createWriter(dbPath: string): SegmentWriter {
     );
     CREATE INDEX IF NOT EXISTS idx_seg_source ON segments (source);
     CREATE INDEX IF NOT EXISTS idx_seg_forte  ON segments (forte);
+    CREATE INDEX IF NOT EXISTS idx_seg_steps  ON segments (steps);
+    CREATE INDEX IF NOT EXISTS idx_seg_bpm    ON segments (bpm);
+    CREATE INDEX IF NOT EXISTS idx_seg_lower_source ON segments (LOWER(source));
+    CREATE INDEX IF NOT EXISTS idx_seg_forte_steps  ON segments (forte, steps);
+    CREATE INDEX IF NOT EXISTS idx_seg_forte_bpm    ON segments (forte, bpm);
+    CREATE INDEX IF NOT EXISTS idx_seg_source_steps ON segments (source, steps);
   `);
 
   const insertStmt = db.prepare(`

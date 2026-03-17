@@ -84,6 +84,45 @@ function buildScale(forte: string): number[] {
   return scale;
 }
 
+/**
+ * Build a virtual scale that maps each index position of a segment's own
+ * scale to the corresponding note in a (potentially larger) target scale.
+ * Returns null if the segment's forte is not a pitch-class subset of the target.
+ */
+function buildRemappedScale(
+  segForte: string,
+  targetForte: string,
+  targetScale: number[],
+): number[] | null {
+  const segPcs = PCS12.parseForte(segForte)?.asSequence() as number[] | undefined;
+  const targetPcs = PCS12.parseForte(targetForte)?.asSequence() as number[] | undefined;
+  if (!segPcs || !targetPcs) return null;
+
+  const segK = segPcs.length;
+  const targetK = targetPcs.length;
+
+  // Check that segment PCs are a subset of target PCs
+  const targetPcsSet = new Set(targetPcs);
+  if (!segPcs.every(pc => targetPcsSet.has(pc))) return null;
+
+  // Map each segment PC to its index in the target PCs
+  const pcIdxInTarget = segPcs.map(pc => targetPcs.indexOf(pc));
+
+  // Build remapped scale: same number of entries per octave as segK,
+  // but each entry comes from the target scale at the mapped position
+  const remapped: number[] = [];
+  for (let oct = 0; oct <= 10; oct++) {
+    for (let i = 0; i < segK; i++) {
+      const targetIdx = oct * targetK + pcIdxInTarget[i];
+      if (targetIdx < targetScale.length) {
+        remapped.push(targetScale[targetIdx]);
+      }
+    }
+  }
+
+  return remapped;
+}
+
 /** Forte cardinality. */
 function forteK(forte: string): number {
   const p = PCS12.parseForte(forte);
@@ -487,8 +526,12 @@ export async function generate(
         const segB = nextSeg();
         const seqA = JSON.parse(segA.sequence) as string[];
         const seqB = JSON.parse(segB.sequence) as string[];
-        const scaleA = buildScale(segA.forte);
-        const scaleB = buildScale(segB.forte);
+        const scaleA = buildRemappedScale(segA.forte, outputForteName, outputScale)
+                    ?? buildRemappedScale(segA.forte, targetForte, targetScale)
+                    ?? buildScale(segA.forte);
+        const scaleB = buildRemappedScale(segB.forte, outputForteName, outputScale)
+                    ?? buildRemappedScale(segB.forte, targetForte, targetScale)
+                    ?? buildScale(segB.forte);
         const baseA = segA.octave * forteK(segA.forte);
         const baseB = segB.octave * forteK(segB.forte);
 
@@ -519,7 +562,9 @@ export async function generate(
       } else {
         const seg = nextSeg();
         const seq = JSON.parse(seg.sequence) as string[];
-        const scale = buildScale(seg.forte);
+        const scale = buildRemappedScale(seg.forte, outputForteName, outputScale)
+                    ?? buildRemappedScale(seg.forte, targetForte, targetScale)
+                    ?? buildScale(seg.forte);
         const base = seg.octave * forteK(seg.forte);
 
         const dec = decodeSegment(seq, scale, base);

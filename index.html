@@ -670,14 +670,14 @@ function renderTable(items, filteredTotal) {
       <tbody>${rows}</tbody>
     </table>`;
 
-  tableWrap.querySelectorAll('tbody tr').forEach(tr => {
-    tr.addEventListener('click', () => {
-      const id = Number(tr.dataset.id);
-      selectedId = id;
-      tableWrap.querySelectorAll('tbody tr').forEach(r => r.classList.remove('selected'));
-      tr.classList.add('selected');
-      showDetail(id);
-    });
+  tableWrap.querySelector('tbody').addEventListener('click', e => {
+    const tr = e.target.closest('tr[data-id]');
+    if (!tr) return;
+    const id = Number(tr.dataset.id);
+    selectedId = id;
+    tableWrap.querySelectorAll('tbody tr').forEach(r => r.classList.remove('selected'));
+    tr.classList.add('selected');
+    showDetail(id);
   });
 }
 
@@ -734,7 +734,7 @@ document.getElementById('f-max-bpm').addEventListener('input', e => {
 
 function stepClass(v) {
   if (v === '0') return 'step-zero';
-  return BigInt(v) > 0n ? 'step-pos' : 'step-neg';
+  return v[0] === '-' ? 'step-neg' : 'step-pos';
 }
 
 function chipHtml(v) {
@@ -766,9 +766,15 @@ function copySequence(seq) {
   });
 }
 
+const SEQ_INITIAL_LIMIT = 500;
 function renderFullSeq(seq) {
-  const chips = seq.map(chipHtml).join('');
-  return `<div class="full-seq-wrap"><div class="full-seq-inner">${chips}</div></div>`;
+  const visible   = seq.length <= SEQ_INITIAL_LIMIT ? seq : seq.slice(0, SEQ_INITIAL_LIMIT);
+  const chips     = visible.map(chipHtml).join('');
+  const remaining = seq.length - visible.length;
+  const moreBar   = remaining > 0
+    ? `<div class="chips-more-bar" style="padding:5px 8px;font-size:11px;color:var(--muted);text-align:center;cursor:pointer;border-top:1px solid var(--border)">+ ${remaining.toLocaleString()} more — click to expand</div>`
+    : '';
+  return `<div class="full-seq-wrap"><div class="full-seq-inner">${chips}</div>${moreBar}</div>`;
 }
 
 async function showDetail(id) {
@@ -780,6 +786,10 @@ async function showDetail(id) {
       <a id="export-midi-btn" class="load-btn" href="#" title="Export .mid"
          style="padding:5px 12px;font-size:12px">
         ⬇ Export MIDI
+      </a>
+      <a id="ss9999-btn" class="load-btn" href="#" target="_blank" rel="noopener noreferrer"
+         style="padding:5px 12px;font-size:12px;border-color:var(--accent2);color:var(--accent2)">
+        ↗ Super Sequencer
       </a>
     </div>
     <div class="meta-grid" id="meta-grid">
@@ -820,11 +830,31 @@ async function showDetail(id) {
   exportBtn.href = `/api/export-midi?id=${seg.id}`;
   exportBtn.download = `seg-${seg.id}-${seg.source.replace(/[^A-Za-z0-9._-]/g, '_')}.mid`;
 
+  // Super Sequencer 9999 link
+  const ss9999Btn = document.getElementById('ss9999-btn');
+  const ss9999Params = new URLSearchParams({
+    bpm:         String(Math.round(seg.bpm)),
+    numerator:   String(seg.numerator),
+    denominator: String(seg.denominator),
+    octave:      String(seg.octave),
+    forte:       seg.forte,
+    sequence:    seg.sequence.join(' '),
+  });
+  ss9999Btn.href = `https://ncg777.github.io/super-sequencer-9999?${ss9999Params.toString()}`;
+
   // Piano roll
   renderPianoRoll(document.getElementById('piano-roll-wrap'), seg.sequence);
 
   // Sequence chips
   document.getElementById('seq-area').innerHTML = renderFullSeq(seg.sequence);
+  const moreBar = document.querySelector('#seq-area .chips-more-bar');
+  if (moreBar) {
+    moreBar.addEventListener('click', () => {
+      const inner = moreBar.previousElementSibling;
+      inner.insertAdjacentHTML('beforeend', seg.sequence.slice(SEQ_INITIAL_LIMIT).map(chipHtml).join(''));
+      moreBar.remove();
+    });
+  }
   const copyBtn = document.getElementById('copy-seq');
   copyBtn.disabled = false;
   copyBtn.innerHTML = copyIcon() + ` Copy ${seg.sequence.length.toLocaleString()} integers`;

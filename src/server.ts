@@ -56,6 +56,8 @@ if (!fs.existsSync(DB_PATH)) {
 console.log(`Opening ${DB_PATH} …`);
 const db = new Database(DB_PATH, { readonly: true });
 db.pragma('journal_mode = WAL');
+db.pragma('mmap_size = 2147483648'); // up to 2 GiB memory-mapped I/O
+db.pragma('cache_size = -32768');    // 32 MiB page cache
 
 // ── Prepared statements ───────────────────────────────────────────────────────
 
@@ -80,51 +82,47 @@ const stmtCount = db.prepare<[], { total: number }>(
   'SELECT COUNT(*) AS total FROM segments'
 );
 
-// Paginated, filterable segment metadata
-const stmtSegments = db.prepare<{
-  forte:    string | null;
-  source:   string | null;
-  q:        string | null;
-  minSteps: number;
-  maxSteps: number;
-  minBpm:   number;
-  maxBpm:   number;
-  limit:    number;
-  offset:   number;
-}, SegMetaRow>(`
-  SELECT id, source, start_step, end_step, trit_lo, trit_hi,
-         forte, octave, bpm, numerator, denominator, steps
-  FROM   segments
-  WHERE  (:forte  IS NULL OR forte  = :forte)
-    AND  (:source IS NULL OR source = :source)
-    AND  (:q      IS NULL OR LOWER(source) LIKE '%' || LOWER(:q) || '%')
-    AND  steps >= :minSteps
-    AND  steps <= :maxSteps
-    AND  bpm   >= :minBpm
-    AND  bpm   <= :maxBpm
-  ORDER  BY id
-  LIMIT :limit OFFSET :offset
-`);
+// ── Dynamic-filter query builder ──────────────────────────────────────────────
+// Builds SQL on the fly so only active filters appear in the WHERE clause.
+// The (:p IS NULL OR col = :p) pattern prevents SQLite from using column
+// indexes, causing a full table scan on every filtered request.
 
-const stmtSegmentsCount = db.prepare<{
+interface FilterOpts {
   forte:    string | null;
   source:   string | null;
   q:        string | null;
-  minSteps: number;
-  maxSteps: number;
-  minBpm:   number;
-  maxBpm:   number;
-}, { total: number }>(`
-  SELECT COUNT(*) AS total
-  FROM   segments
-  WHERE  (:forte  IS NULL OR forte  = :forte)
-    AND  (:source IS NULL OR source = :source)
-    AND  (:q      IS NULL OR LOWER(source) LIKE '%' || LOWER(:q) || '%')
-    AND  steps >= :minSteps
-    AND  steps <= :maxSteps
-    AND  bpm   >= :minBpm
-    AND  bpm   <= :maxBpm
-`);
+  minSteps: number | null;
+  maxSteps: number | null;
+  minBpm:   number | null;
+  maxBpm:   number | null;
+}
+
+const SEL_META = 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const stmtCache = new Map<string, any>();
+function getCachedStmt(sql: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let s: any = stmtCache.get(sql);
+  if (!s) { s = db.prepare(sql); stmtCache.set(sql, s); }
+  return s;
+}
+
+function buildFilterQuery(
+  fp: FilterOpts, select: string, tail: string,
+): { sql: string; params: Record<string, string | number> } {
+  const where: string[] = [];
+  const params: Record<string, string | number> = {};
+  if (fp.forte)             { where.push('forte  = :forte');                             params.forte    = fp.forte; }
+  if (fp.source)            { where.push('source = :source');                            params.source   = fp.source; }
+  if (fp.q)                 { where.push("LOWER(source) LIKE '%' || LOWER(:q) || '%'"); params.q        = fp.q; }
+  if (fp.minSteps !== null) { where.push('steps >= :minSteps');                          params.minSteps = fp.minSteps; }
+  if (fp.maxSteps !== null) { where.push('steps <= :maxSteps');                          params.maxSteps = fp.maxSteps; }
+  if (fp.minBpm   !== null) { where.push('bpm   >= :minBpm');                            params.minBpm   = fp.minBpm; }
+  if (fp.maxBpm   !== null) { where.push('bpm   <= :maxBpm');                            params.maxBpm   = fp.maxBpm; }
+  const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return { sql: `${select} FROM segments ${w}${tail ? ' ' + tail : ''}`, params };
+}
 
 const stmtById = db.prepare<{ id: number }, SegRow>(`
   SELECT id, source, start_step, end_step, trit_lo, trit_hi,
@@ -140,6 +138,35 @@ const stmtSources = db.prepare<[], { source: string; count: number }>(
 const stmtFortes = db.prepare<[], { forte: string; count: number }>(
   'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
 );
+
+// ── Lazy startup caches (computed on first request; DB is read-only so values never change) ────
+// Running these aggregate queries at startup blocked the process for several seconds on large DBs.
+
+let _cachedCount:   number | null = null;
+let _cachedSources: string | null = null;
+let _cachedFortes:  string | null = null;
+
+function cachedCount(): number {
+  if (_cachedCount === null) {
+    _cachedCount = stmtCount.get()?.total ?? 0;
+    console.log(`  loaded count: ${_cachedCount.toLocaleString()} segments`);
+  }
+  return _cachedCount;
+}
+function cachedSources(): string {
+  if (_cachedSources === null) {
+    _cachedSources = JSON.stringify(stmtSources.all());
+    console.log(`  loaded sources: ${JSON.parse(_cachedSources).length}`);
+  }
+  return _cachedSources;
+}
+function cachedFortes(): string {
+  if (_cachedFortes === null) {
+    _cachedFortes = JSON.stringify(stmtFortes.all());
+    console.log(`  loaded fortes: ${JSON.parse(_cachedFortes).length}`);
+  }
+  return _cachedFortes;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -164,8 +191,10 @@ function segFullToJson(row: SegRow) {
   return { ...segMetaToJson(row), sequence: JSON.parse(row.sequence) as string[] };
 }
 
-function send(res: http.ServerResponse, status: number, body: string, ct = 'text/plain'): void {
-  res.writeHead(status, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
+function send(res: http.ServerResponse, status: number, body: string, ct = 'text/plain', maxAge = 0): void {
+  const headers: Record<string, string> = { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' };
+  if (maxAge > 0) headers['Cache-Control'] = `public, max-age=${maxAge}`;
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -297,9 +326,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Total count
+  // Total count (cached)
   if (path_ === '/api/count') {
-    sendJSON(res, 200, { total: stmtCount.get()?.total ?? 0 });
+    send(res, 200, JSON.stringify({ total: cachedCount() }), 'application/json', 300);
     return;
   }
 
@@ -309,16 +338,19 @@ const server = http.createServer((req, res) => {
     const forte    = p.forte  || null;
     const source   = p.source || null;
     const q        = p.q      || null;
-    const minSteps = Number(p.minSteps) || 0;
-    const maxSteps = Number(p.maxSteps) || 99999;
-    const minBpm   = Number(p.minBpm)   || 0;
-    const maxBpm   = Number(p.maxBpm)   || 99999;
+    const minSteps = p.minSteps ? Number(p.minSteps) : null;
+    const maxSteps = p.maxSteps ? Number(p.maxSteps) : null;
+    const minBpm   = p.minBpm   ? Number(p.minBpm)   : null;
+    const maxBpm   = p.maxBpm   ? Number(p.maxBpm)   : null;
     const page     = Math.max(0, Number(p.page)  || 0);
     const limit    = Math.min(MAX_LIMIT, Math.max(1, Number(p.limit) || DEF_LIMIT));
     const offset   = page * limit;
-    const params   = { forte, source, q, minSteps, maxSteps, minBpm, maxBpm };
-    const rows     = stmtSegments.all({ ...params, limit, offset });
-    const total    = stmtSegmentsCount.get(params)?.total ?? 0;
+    const fp: FilterOpts   = { forte, source, q, minSteps, maxSteps, minBpm, maxBpm };
+    const isUnfiltered     = !forte && !source && !q && minSteps === null && maxSteps === null && minBpm === null && maxBpm === null;
+    const { sql: dataSql,  params: dataParams  } = buildFilterQuery(fp, SEL_META, 'ORDER BY id LIMIT :limit OFFSET :offset');
+    const { sql: countSql, params: countParams } = buildFilterQuery(fp, 'SELECT COUNT(*) AS total', '');
+    const rows  = getCachedStmt(dataSql).all({ ...dataParams, limit, offset }) as SegMetaRow[];
+    const total = isUnfiltered ? cachedCount() : (getCachedStmt(countSql).get(countParams) as { total: number } | undefined)?.total ?? 0;
     sendJSON(res, 200, { total, page, limit, items: rows.map(segMetaToJson) });
     return;
   }
@@ -333,15 +365,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Source list
+  // Source list (cached)
   if (path_ === '/api/sources') {
-    sendJSON(res, 200, stmtSources.all());
+    send(res, 200, cachedSources(), 'application/json', 300);
     return;
   }
 
-  // Forte list
+  // Forte list (cached)
   if (path_ === '/api/fortes') {
-    sendJSON(res, 200, stmtFortes.all());
+    send(res, 200, cachedFortes(), 'application/json', 300);
     return;
   }
 

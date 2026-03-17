@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build-dataset": "tsx src/buildDataset.ts",
+    "add-indexes":   "tsx src/addIndexes.ts",
     "serve": "tsx src/server.ts"
   },
   "dependencies": {
