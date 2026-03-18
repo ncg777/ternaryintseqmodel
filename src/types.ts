@@ -35,18 +35,26 @@ export interface StepGrid {
 
 /** A segment record ready to be written to MIDI_SEGMENTS.db. */
 export interface SegmentRecord {
-  source:      string;
-  startStep:   number;
-  endStep:     number;
-  tritLo:      number;
-  tritHi:      number;
-  forte:       string;
-  octave:      number;
-  bpm:         number;
-  numerator:   number;
-  denominator: number;
-  steps:       number;
+  source:       string;
+  startStep:    number;
+  endStep:      number;
+  tritLo:       number;
+  tritHi:       number;
+  forte:        string;
+  octave:       number;
+  bpm:          number;
+  numerator:    number;
+  denominator:  number;
+  steps:        number;
   /** Balanced-ternary integers as decimal strings (scale-relative trit positions). */
-  sequence:    string[];
+  sequence:     string[];
+  /** Total number of note-on events (trit = +1) across the whole sequence. */
+  noteCount:    number;
+  /** Fraction of steps that are non-zero (0.0 – 1.0). */
+  noteDensity:  number;
+  /** Number of distinct trit positions (scale degrees) that fired at least one note-on. */
+  uniquePitches: number;
+  /** Mean number of simultaneously sounding notes, averaged over all steps. */
+  polyphonyAvg:  number;
 }
 

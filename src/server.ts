@@ -62,19 +62,23 @@ db.pragma('cache_size = -32768');    // 32 MiB page cache
 // ── Prepared statements ───────────────────────────────────────────────────────
 
 interface SegRow {
-  id:          number;
-  source:      string;
-  start_step:  number;
-  end_step:    number;
-  trit_lo:     number;
-  trit_hi:     number;
-  forte:       string;
-  octave:      number;
-  bpm:         number;
-  numerator:   number;
-  denominator: number;
-  steps:       number;
-  sequence:    string;
+  id:            number;
+  source:        string;
+  start_step:    number;
+  end_step:      number;
+  trit_lo:       number;
+  trit_hi:       number;
+  forte:         string;
+  octave:        number;
+  bpm:           number;
+  numerator:     number;
+  denominator:   number;
+  steps:         number;
+  sequence:      string;
+  note_count:    number;
+  note_density:  number;
+  unique_pitches: number;
+  polyphony_avg:  number;
 }
 type SegMetaRow = Omit<SegRow, 'sequence'>;
 
@@ -97,7 +101,7 @@ interface FilterOpts {
   maxBpm:   number | null;
 }
 
-const SEL_META = 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps';
+const SEL_META = 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps, note_count, note_density, unique_pitches, polyphony_avg';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const stmtCache = new Map<string, any>();
@@ -126,7 +130,8 @@ function buildFilterQuery(
 
 const stmtById = db.prepare<{ id: number }, SegRow>(`
   SELECT id, source, start_step, end_step, trit_lo, trit_hi,
-         forte, octave, bpm, numerator, denominator, steps, sequence
+         forte, octave, bpm, numerator, denominator, steps, sequence,
+         note_count, note_density, unique_pitches, polyphony_avg
   FROM   segments
   WHERE  id = :id
 `);
@@ -172,18 +177,22 @@ function cachedFortes(): string {
 
 function segMetaToJson(row: SegMetaRow) {
   return {
-    id:          row.id,
-    source:      row.source,
-    startStep:   row.start_step,
-    endStep:     row.end_step,
-    tritLo:      row.trit_lo,
-    tritHi:      row.trit_hi,
-    forte:       row.forte,
-    octave:      row.octave,
-    bpm:         row.bpm,
-    numerator:   row.numerator,
-    denominator: row.denominator,
-    steps:       row.steps,
+    id:            row.id,
+    source:        row.source,
+    startStep:     row.start_step,
+    endStep:       row.end_step,
+    tritLo:        row.trit_lo,
+    tritHi:        row.trit_hi,
+    forte:         row.forte,
+    octave:        row.octave,
+    bpm:           row.bpm,
+    numerator:     row.numerator,
+    denominator:   row.denominator,
+    steps:         row.steps,
+    noteCount:     row.note_count,
+    noteDensity:   row.note_density,
+    uniquePitches: row.unique_pitches,
+    polyphonyAvg:  row.polyphony_avg,
   };
 }
 

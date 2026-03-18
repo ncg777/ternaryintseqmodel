@@ -6,6 +6,7 @@
   "scripts": {
     "build-dataset": "tsx src/buildDataset.ts",
     "add-indexes":   "tsx src/addIndexes.ts",
+    "add-metrics":   "tsx src/addMetrics.ts",
     "serve": "tsx src/server.ts"
   },
   "dependencies": {

@@ -56,6 +56,22 @@ const indexes: { name: string; ddl: string }[] = [
     name: 'idx_seg_source_steps',
     ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_source_steps ON segments (source, steps)',
   },
+  {
+    name: 'idx_seg_note_count',
+    ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_note_count ON segments (note_count)',
+  },
+  {
+    name: 'idx_seg_note_density',
+    ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_note_density ON segments (note_density)',
+  },
+  {
+    name: 'idx_seg_unique_pitches',
+    ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_unique_pitches ON segments (unique_pitches)',
+  },
+  {
+    name: 'idx_seg_polyphony_avg',
+    ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_polyphony_avg ON segments (polyphony_avg)',
+  },
 ];
 
 const existing = new Set<string>(

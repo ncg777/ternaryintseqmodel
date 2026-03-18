@@ -25,37 +25,47 @@ export function createWriter(dbPath: string): SegmentWriter {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS segments (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      source      TEXT    NOT NULL,
-      start_step  INTEGER NOT NULL,
-      end_step    INTEGER NOT NULL,
-      trit_lo     INTEGER NOT NULL,
-      trit_hi     INTEGER NOT NULL,
-      forte       TEXT    NOT NULL,
-      octave      INTEGER NOT NULL DEFAULT 0,
-      bpm         REAL    NOT NULL,
-      numerator   INTEGER NOT NULL,
-      denominator INTEGER NOT NULL,
-      steps       INTEGER NOT NULL,
-      sequence    TEXT    NOT NULL
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      source         TEXT    NOT NULL,
+      start_step     INTEGER NOT NULL,
+      end_step       INTEGER NOT NULL,
+      trit_lo        INTEGER NOT NULL,
+      trit_hi        INTEGER NOT NULL,
+      forte          TEXT    NOT NULL,
+      octave         INTEGER NOT NULL DEFAULT 0,
+      bpm            REAL    NOT NULL,
+      numerator      INTEGER NOT NULL,
+      denominator    INTEGER NOT NULL,
+      steps          INTEGER NOT NULL,
+      sequence       TEXT    NOT NULL,
+      note_count     INTEGER NOT NULL DEFAULT 0,
+      note_density   REAL    NOT NULL DEFAULT 0,
+      unique_pitches INTEGER NOT NULL DEFAULT 0,
+      polyphony_avg  REAL    NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_seg_source ON segments (source);
-    CREATE INDEX IF NOT EXISTS idx_seg_forte  ON segments (forte);
-    CREATE INDEX IF NOT EXISTS idx_seg_steps  ON segments (steps);
-    CREATE INDEX IF NOT EXISTS idx_seg_bpm    ON segments (bpm);
+    CREATE INDEX IF NOT EXISTS idx_seg_source       ON segments (source);
+    CREATE INDEX IF NOT EXISTS idx_seg_forte        ON segments (forte);
+    CREATE INDEX IF NOT EXISTS idx_seg_steps        ON segments (steps);
+    CREATE INDEX IF NOT EXISTS idx_seg_bpm          ON segments (bpm);
     CREATE INDEX IF NOT EXISTS idx_seg_lower_source ON segments (LOWER(source));
     CREATE INDEX IF NOT EXISTS idx_seg_forte_steps  ON segments (forte, steps);
     CREATE INDEX IF NOT EXISTS idx_seg_forte_bpm    ON segments (forte, bpm);
     CREATE INDEX IF NOT EXISTS idx_seg_source_steps ON segments (source, steps);
+    CREATE INDEX IF NOT EXISTS idx_seg_note_count     ON segments (note_count);
+    CREATE INDEX IF NOT EXISTS idx_seg_note_density   ON segments (note_density);
+    CREATE INDEX IF NOT EXISTS idx_seg_unique_pitches ON segments (unique_pitches);
+    CREATE INDEX IF NOT EXISTS idx_seg_polyphony_avg  ON segments (polyphony_avg);
   `);
 
   const insertStmt = db.prepare(`
     INSERT INTO segments
       (source, start_step, end_step, trit_lo, trit_hi,
-       forte, octave, bpm, numerator, denominator, steps, sequence)
+       forte, octave, bpm, numerator, denominator, steps, sequence,
+       note_count, note_density, unique_pitches, polyphony_avg)
     VALUES
       (@source, @startStep, @endStep, @tritLo, @tritHi,
-       @forte, @octave, @bpm, @numerator, @denominator, @steps, @sequence)
+       @forte, @octave, @bpm, @numerator, @denominator, @steps, @sequence,
+       @noteCount, @noteDensity, @uniquePitches, @polyphonyAvg)
   `);
 
   interface BatchRow extends SegmentRecord { sequence_str: string }
@@ -63,18 +73,22 @@ export function createWriter(dbPath: string): SegmentWriter {
   const flushTx = db.transaction((rows: BatchRow[]) => {
     for (const row of rows) {
       insertStmt.run({
-        source:      row.source,
-        startStep:   row.startStep,
-        endStep:     row.endStep,
-        tritLo:      row.tritLo,
-        tritHi:      row.tritHi,
-        forte:       row.forte,
-        octave:      row.octave,
-        bpm:         row.bpm,
-        numerator:   row.numerator,
-        denominator: row.denominator,
-        steps:       row.steps,
-        sequence:    row.sequence_str,
+        source:        row.source,
+        startStep:     row.startStep,
+        endStep:       row.endStep,
+        tritLo:        row.tritLo,
+        tritHi:        row.tritHi,
+        forte:         row.forte,
+        octave:        row.octave,
+        bpm:           row.bpm,
+        numerator:     row.numerator,
+        denominator:   row.denominator,
+        steps:         row.steps,
+        sequence:      row.sequence_str,
+        noteCount:     row.noteCount,
+        noteDensity:   row.noteDensity,
+        uniquePitches: row.uniquePitches,
+        polyphonyAvg:  row.polyphonyAvg,
       });
     }
   });

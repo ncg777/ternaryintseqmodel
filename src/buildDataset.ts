@@ -63,6 +63,47 @@ function nonZeroFraction(seq: bigint[]): number {
   return nz / seq.length;
 }
 
+/**
+ * Compute quality metrics from a finalised (string[]) sequence.
+ * Called after fixNoteOffs so the data is in its stored form.
+ */
+function computeMetrics(seq: string[]): {
+  noteCount:     number;
+  noteDensity:   number;
+  uniquePitches: number;
+  polyphonyAvg:  number;
+} {
+  let noteCount = 0;
+  let nonZeroSteps = 0;
+  const pitchSet   = new Set<number>();
+  const sounding   = new Set<number>();
+  let soundingSum  = 0;
+
+  for (const raw of seq) {
+    if (raw !== '0') {
+      nonZeroSteps++;
+      const trits = toBalancedTernary(BigInt(raw));
+      for (let i = 0; i < trits.length; i++) {
+        if (trits[i] === 1) {
+          noteCount++;
+          pitchSet.add(i);
+          sounding.add(i);
+        } else if (trits[i] === -1) {
+          sounding.delete(i);
+        }
+      }
+    }
+    soundingSum += sounding.size;
+  }
+
+  return {
+    noteCount,
+    noteDensity:   seq.length ? nonZeroSteps / seq.length : 0,
+    uniquePitches: pitchSet.size,
+    polyphonyAvg:  seq.length ? soundingSum / seq.length : 0,
+  };
+}
+
 // ── Note-off repair helpers ───────────────────────────────────────────────────
 
 function parseTritMap(stepStr: string): Map<number, number> {
@@ -219,20 +260,25 @@ async function main(): Promise<void> {
         const fixedSeq = fixNoteOffs(analysis.sequence);
         const absStart = alnStart + leadOffset;
         const absEnd   = absStart + fixedSeq.length;
+        const metrics  = computeMetrics(fixedSeq);
 
         writer.add({
-          source:      fileInfo.filename,
-          startStep:   absStart,
-          endStep:     absEnd,
-          tritLo:      analysis.tritLo,
-          tritHi:      analysis.tritHi,
-          forte:       analysis.forte,
-          octave:      analysis.octave,
-          bpm:         fileInfo.bpm,
-          numerator:   fileInfo.numerator,
-          denominator: fileInfo.denominator,
-          steps:       fixedSeq.length,
-          sequence:    fixedSeq,
+          source:        fileInfo.filename,
+          startStep:     absStart,
+          endStep:       absEnd,
+          tritLo:        analysis.tritLo,
+          tritHi:        analysis.tritHi,
+          forte:         analysis.forte,
+          octave:        analysis.octave,
+          bpm:           fileInfo.bpm,
+          numerator:     fileInfo.numerator,
+          denominator:   fileInfo.denominator,
+          steps:         fixedSeq.length,
+          sequence:      fixedSeq,
+          noteCount:     metrics.noteCount,
+          noteDensity:   metrics.noteDensity,
+          uniquePitches: metrics.uniquePitches,
+          polyphonyAvg:  metrics.polyphonyAvg,
         });
       }
     }

@@ -42,6 +42,7 @@ interface SegRow {
   denominator: number;
   steps:       number;
   sequence:    string;
+  note_count:  number;
 }
 
 interface NoteEvent {
@@ -418,8 +419,10 @@ export async function generate(
 
   const allSegs = segsDb.prepare(`
     SELECT id, source, start_step, end_step, trit_lo, trit_hi,
-           forte, octave, bpm, numerator, denominator, steps, sequence
+           forte, octave, bpm, numerator, denominator, steps, sequence,
+           note_count
     FROM segments
+    WHERE note_count >= 4
     ORDER BY RANDOM()
     LIMIT 5000
   `).all() as SegRow[];
@@ -445,17 +448,8 @@ export async function generate(
     throw new Error(`No compatible segments found for forte ${targetForte}`);
   }
 
-  // Compute note-on count for each candidate
-  const withCounts = candidates.map(seg => {
-    const seq = JSON.parse(seg.sequence) as string[];
-    let noteOns = 0;
-    for (const raw of seq) {
-      if (raw === '0') continue;
-      const trits = toBalancedTernary(BigInt(raw));
-      for (const t of trits) if (t === 1) noteOns++;
-    }
-    return { seg, noteOns };
-  });
+  // Use stored note_count for pool ranking (avoids re-parsing every sequence)
+  const withCounts = candidates.map(seg => ({ seg, noteOns: seg.note_count }));
 
   // Sort by note-on count, take a cluster around the median
   withCounts.sort((a, b) => a.noteOns - b.noteOns);
