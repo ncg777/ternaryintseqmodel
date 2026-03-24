@@ -422,7 +422,7 @@ export async function generate(
            forte, octave, bpm, numerator, denominator, steps, sequence,
            note_count
     FROM segments
-    WHERE note_count >= 4
+    WHERE note_count >= 12
     ORDER BY RANDOM()
     LIMIT 5000
   `).all() as SegRow[];
@@ -657,7 +657,7 @@ export async function getGenerateOptions(
   await PCS12.init();
 
   const rows = segsDb.prepare(`
-    SELECT forte, COUNT(*) AS cnt FROM segments GROUP BY forte ORDER BY cnt DESC
+    SELECT forte, COUNT(*) AS cnt FROM segments WHERE note_count >= 12 GROUP BY forte ORDER BY cnt DESC
   `).all() as { forte: string; cnt: number }[];
 
   const fortes: ForteOption[] = [];

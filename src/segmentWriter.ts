@@ -116,6 +116,29 @@ export function createWriter(dbPath: string): SegmentWriter {
 
     close(): void {
       flush();
+
+      // Persist aggregate stats so the server can read them at startup
+      // without running expensive GROUP BY queries.
+      db.exec(`CREATE TABLE IF NOT EXISTS stats_cache (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )`);
+      const segCount = (db.prepare('SELECT COUNT(*) AS n FROM segments').get() as { n: number }).n;
+      const sources  = db.prepare(
+        'SELECT source, COUNT(*) AS count FROM segments GROUP BY source ORDER BY source'
+      ).all();
+      const fortes   = db.prepare(
+        'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
+      ).all();
+      const upsert = db.prepare(
+        'INSERT OR REPLACE INTO stats_cache (key, value) VALUES (?, ?)'
+      );
+      db.transaction(() => {
+        upsert.run('count',   String(segCount));
+        upsert.run('sources', JSON.stringify(sources));
+        upsert.run('fortes',  JSON.stringify(fortes));
+      })();
+
       db.close();
     },
   };

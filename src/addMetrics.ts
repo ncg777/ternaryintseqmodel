@@ -172,4 +172,25 @@ while (processed < total) {
 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 console.log(`\n\nDone in ${elapsed}s. ${processed.toLocaleString()} rows updated.`);
 
+// Rebuild stats_cache so the server benefits from the update immediately.
+process.stdout.write('Rebuilding stats_cache … ');
+db.exec(`CREATE TABLE IF NOT EXISTS stats_cache (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`);
+const cCount   = (db.prepare('SELECT COUNT(*) AS n FROM segments').get() as { n: number }).n;
+const cSources = db.prepare(
+  'SELECT source, COUNT(*) AS count FROM segments GROUP BY source ORDER BY source'
+).all();
+const cFortes  = db.prepare(
+  'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
+).all();
+const cUpsert  = db.prepare('INSERT OR REPLACE INTO stats_cache (key, value) VALUES (?, ?)');
+db.transaction(() => {
+  cUpsert.run('count',   String(cCount));
+  cUpsert.run('sources', JSON.stringify(cSources));
+  cUpsert.run('fortes',  JSON.stringify(cFortes));
+})();
+console.log('done');
+
 db.close();

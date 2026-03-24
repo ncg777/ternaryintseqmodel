@@ -30,12 +30,10 @@ import { PCS12 } from 'ultra-mega-enumerator';
 import { generate, getGenerateOptions } from './generate.ts';
 import { toBalancedTernary } from './utils.ts';
 
-// Lazy-init PCS12 on first /api/scale request
-let pcs12Ready: Promise<void> | null = null;
-function ensurePcs12(): Promise<void> {
-  if (!pcs12Ready) pcs12Ready = PCS12.init();
-  return pcs12Ready;
-}
+// Eagerly start PCS12 init so it's warmed before the first request hits.
+// fire-and-forget — the server still binds the port immediately.
+const pcs12Ready: Promise<void> = PCS12.init();
+function ensurePcs12(): Promise<void> { return pcs12Ready; }
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const ROOT       = path.resolve(__dirname, '..');
@@ -58,6 +56,41 @@ const db = new Database(DB_PATH, { readonly: true });
 db.pragma('journal_mode = WAL');
 db.pragma('mmap_size = 2147483648'); // up to 2 GiB memory-mapped I/O
 db.pragma('cache_size = -32768');    // 32 MiB page cache
+
+// ── Detect whether metric columns have been added yet (npm run add-metrics) ──
+
+const _dbCols = new Set(
+  (db.pragma('table_info(segments)') as { name: string }[]).map(c => c.name),
+);
+const HAS_METRICS = _dbCols.has('note_count');
+if (!HAS_METRICS) {
+  console.warn(
+    '\n  WARNING: metric columns not found in segments table.\n' +
+    '  Run  npm run add-metrics  to backfill note_count / note_density /\n' +
+    '  unique_pitches / polyphony_avg without rebuilding the full dataset.\n',
+  );
+}
+
+// ── Load stats_cache (populated by build-dataset / add-metrics) ──────────────
+// Avoids GROUP BY aggregations at runtime; the data never changes while
+// the server is running.
+
+const _statsCache = (() => {
+  const hasTable = (db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='stats_cache'"
+  ).get() as { name: string } | undefined)?.name === 'stats_cache';
+  if (!hasTable) return null;
+  const rows = db.prepare('SELECT key, value FROM stats_cache').all() as { key: string; value: string }[];
+  const map  = new Map(rows.map(r => [r.key, r.value]));
+  if (!map.has('count') || !map.has('sources') || !map.has('fortes')) return null;
+  return { count: Number(map.get('count')), sources: map.get('sources')!, fortes: map.get('fortes')! };
+})();
+
+if (_statsCache) {
+  console.log(`  stats_cache loaded: ${_statsCache.count.toLocaleString()} segments`);
+} else {
+  console.warn('  stats_cache not found — run  npm run add-metrics  to cache aggregate queries.');
+}
 
 // ── Prepared statements ───────────────────────────────────────────────────────
 
@@ -101,7 +134,9 @@ interface FilterOpts {
   maxBpm:   number | null;
 }
 
-const SEL_META = 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps, note_count, note_density, unique_pitches, polyphony_avg';
+const SEL_META = HAS_METRICS
+  ? 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps, note_count, note_density, unique_pitches, polyphony_avg'
+  : 'SELECT id, source, start_step, end_step, trit_lo, trit_hi, forte, octave, bpm, numerator, denominator, steps, 0 AS note_count, 0.0 AS note_density, 0 AS unique_pitches, 0.0 AS polyphony_avg';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const stmtCache = new Map<string, any>();
@@ -128,13 +163,18 @@ function buildFilterQuery(
   return { sql: `${select} FROM segments ${w}${tail ? ' ' + tail : ''}`, params };
 }
 
-const stmtById = db.prepare<{ id: number }, SegRow>(`
-  SELECT id, source, start_step, end_step, trit_lo, trit_hi,
-         forte, octave, bpm, numerator, denominator, steps, sequence,
-         note_count, note_density, unique_pitches, polyphony_avg
-  FROM   segments
-  WHERE  id = :id
-`);
+const stmtById = db.prepare<{ id: number }, SegRow>(
+  HAS_METRICS
+    ? `SELECT id, source, start_step, end_step, trit_lo, trit_hi,
+              forte, octave, bpm, numerator, denominator, steps, sequence,
+              note_count, note_density, unique_pitches, polyphony_avg
+       FROM   segments WHERE id = :id`
+    : `SELECT id, source, start_step, end_step, trit_lo, trit_hi,
+              forte, octave, bpm, numerator, denominator, steps, sequence,
+              0 AS note_count, 0.0 AS note_density,
+              0 AS unique_pitches, 0.0 AS polyphony_avg
+       FROM   segments WHERE id = :id`,
+);
 
 const stmtSources = db.prepare<[], { source: string; count: number }>(
   'SELECT source, COUNT(*) AS count FROM segments GROUP BY source ORDER BY source'
@@ -147,28 +187,29 @@ const stmtFortes = db.prepare<[], { forte: string; count: number }>(
 // ── Lazy startup caches (computed on first request; DB is read-only so values never change) ────
 // Running these aggregate queries at startup blocked the process for several seconds on large DBs.
 
-let _cachedCount:   number | null = null;
-let _cachedSources: string | null = null;
-let _cachedFortes:  string | null = null;
+// Pre-populate caches from stats_cache (all three are instant reads if available).
+let _cachedCount:   number | null = _statsCache?.count   ?? null;
+let _cachedSources: string | null = _statsCache?.sources ?? null;
+let _cachedFortes:  string | null = _statsCache?.fortes  ?? null;
 
 function cachedCount(): number {
   if (_cachedCount === null) {
     _cachedCount = stmtCount.get()?.total ?? 0;
-    console.log(`  loaded count: ${_cachedCount.toLocaleString()} segments`);
+    console.log(`  computed count: ${_cachedCount.toLocaleString()} segments`);
   }
   return _cachedCount;
 }
 function cachedSources(): string {
   if (_cachedSources === null) {
     _cachedSources = JSON.stringify(stmtSources.all());
-    console.log(`  loaded sources: ${JSON.parse(_cachedSources).length}`);
+    console.log(`  computed sources: ${JSON.parse(_cachedSources).length}`);
   }
   return _cachedSources;
 }
 function cachedFortes(): string {
   if (_cachedFortes === null) {
     _cachedFortes = JSON.stringify(stmtFortes.all());
-    console.log(`  loaded fortes: ${JSON.parse(_cachedFortes).length}`);
+    console.log(`  computed fortes: ${JSON.parse(_cachedFortes).length}`);
   }
   return _cachedFortes;
 }
@@ -491,5 +532,15 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`\nServer ready → http://localhost:${PORT}`);
   console.log(`Database: ${DB_PATH}`);
+
+  // If stats_cache was absent, compute the aggregates in the background
+  // so the first real requests don't pay the cost.
+  if (!_statsCache) {
+    setImmediate(() => {
+      cachedCount();
+      setTimeout(() => cachedSources(), 200);
+      setTimeout(() => cachedFortes(),  600);
+    });
+  }
 });
 
