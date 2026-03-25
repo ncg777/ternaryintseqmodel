@@ -417,36 +417,42 @@ export async function generate(
       ? targetPcsSet
       : new Set(PCS12.parseForte(outputForteName)!.asSequence() as number[]);
 
-  const allSegs = segsDb.prepare(`
+  // Pre-compute compatible forte strings using the forte index so the main
+  // query hits only a small fraction of the table instead of all 16M rows.
+  const distinctFortesInDb = segsDb.prepare(
+    `SELECT DISTINCT forte FROM segments WHERE forte NOT LIKE '1-%'`
+  ).all() as { forte: string }[];
+
+  const compatibleFortes = distinctFortesInDb
+    .filter(({ forte }) => {
+      const pcs = PCS12.parseForte(forte);
+      if (!pcs) return false;
+      const k = (pcs as unknown as { getK(): number }).getK();
+      if (k < 2 || k > 8) return false;
+      const pcArr = pcs.asSequence() as number[];
+      return pcArr.every((pc: number) => targetPcsSet.has(pc))
+          || pcArr.every((pc: number) => outputPcsSet.has(pc));
+    })
+    .map(r => r.forte);
+
+  if (compatibleFortes.length === 0)
+    throw new Error(`No compatible segments found for forte ${targetForte}`);
+
+  // Query only rows with compatible fortes — much faster with idx_seg_forte.
+  const ph = compatibleFortes.map(() => '?').join(',');
+  const candidates = segsDb.prepare(`
     SELECT id, source, start_step, end_step, trit_lo, trit_hi,
            forte, octave, bpm, numerator, denominator, steps, sequence,
            note_count
     FROM segments
     WHERE note_count >= 12
+      AND forte IN (${ph})
     ORDER BY RANDOM()
     LIMIT 5000
-  `).all() as SegRow[];
+  `).all(compatibleFortes) as SegRow[];
 
-  const candidates: SegRow[] = [];
-  for (const seg of allSegs) {
-    const k = forteK(seg.forte);
-    if (k < 1 || k > 8) continue;
-
-    const segPcs = PCS12.parseForte(seg.forte);
-    if (!segPcs) continue;
-    const segPcArr = segPcs.asSequence() as number[];
-
-    // Accept if pitch classes fit within the source scale OR the output scale
-    const fitsSource = segPcArr.every(pc => targetPcsSet.has(pc));
-    const fitsOutput = segPcArr.every(pc => outputPcsSet.has(pc));
-    if (!fitsSource && !fitsOutput) continue;
-
-    candidates.push(seg);
-  }
-
-  if (candidates.length === 0) {
+  if (candidates.length === 0)
     throw new Error(`No compatible segments found for forte ${targetForte}`);
-  }
 
   // Use stored note_count for pool ranking (avoids re-parsing every sequence)
   const withCounts = candidates.map(seg => ({ seg, noteOns: seg.note_count }));
@@ -657,7 +663,7 @@ export async function getGenerateOptions(
   await PCS12.init();
 
   const rows = segsDb.prepare(`
-    SELECT forte, COUNT(*) AS cnt FROM segments WHERE note_count >= 12 GROUP BY forte ORDER BY cnt DESC
+    SELECT forte, COUNT(*) AS cnt FROM segments WHERE note_count >= 12 AND forte NOT LIKE '1-%' GROUP BY forte ORDER BY cnt DESC
   `).all() as { forte: string; cnt: number }[];
 
   const fortes: ForteOption[] = [];
@@ -680,11 +686,11 @@ export async function getGenerateOptions(
   }
 
   fortes.sort((a, b) => {
-    if (b.k !== a.k) return b.k - a.k;
+    if (a.k !== b.k) return a.k - b.k;
     const pa = parseForteNum(a.forte);
     const pb = parseForteNum(b.forte);
-    if (pb.setNum !== pa.setNum) return pb.setNum - pa.setNum;
-    return pb.transpose - pa.transpose;
+    if (pa.setNum !== pb.setNum) return pa.setNum - pb.setNum;
+    return pa.transpose - pb.transpose;
   });
   return { fortes };
 }

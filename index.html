@@ -1196,6 +1196,24 @@ async function init() {
     // Populate forte dropdown
     if (fortesRes.ok) {
       const fortes = await fortesRes.json();
+      // Sort by forte number (k asc → setNum asc → transpose asc)
+      function parseForteNum(forte) {
+        const dash = forte.indexOf('-');
+        const k = parseInt(forte.slice(0, dash)) || 0;
+        const rest = forte.slice(dash + 1);
+        const dot = rest.indexOf('.');
+        const left = dot >= 0 ? rest.slice(0, dot) : rest;
+        const setNum = parseInt(left.replace(/[AB]$/i, '')) || 0;
+        const transpose = dot >= 0 ? (parseInt(rest.slice(dot + 1)) || 0) : 0;
+        return { k, setNum, transpose };
+      }
+      fortes.sort((a, b) => {
+        const pa = parseForteNum(a.forte);
+        const pb = parseForteNum(b.forte);
+        if (pa.k !== pb.k) return pa.k - pb.k;
+        if (pa.setNum !== pb.setNum) return pa.setNum - pb.setNum;
+        return pa.transpose - pb.transpose;
+      });
       const fSelect = document.getElementById('f-forte');
       for (const { forte, count } of fortes) {
         const o = document.createElement('option');

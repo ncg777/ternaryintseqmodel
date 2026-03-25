@@ -31,8 +31,13 @@ import { generate, getGenerateOptions } from './generate.ts';
 import { toBalancedTernary } from './utils.ts';
 
 // Eagerly start PCS12 init so it's warmed before the first request hits.
-// fire-and-forget — the server still binds the port immediately.
+// PCS12.init() has a bug: concurrent calls during initialization return a
+// new immediately-resolved promise instead of waiting, causing parseForte()
+// to return undefined on a half-initialized instance.  We patch init() to
+// always return the same promise so every caller — including the internal
+// `await PCS12.init()` inside generate.ts — waits for full completion.
 const pcs12Ready: Promise<void> = PCS12.init();
+(PCS12 as unknown as { init: () => Promise<void> }).init = () => pcs12Ready;
 function ensurePcs12(): Promise<void> { return pcs12Ready; }
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
@@ -466,7 +471,7 @@ const server = http.createServer((req, res) => {
 
   // Generate options
   if (path_ === '/api/generate-options') {
-    getGenerateOptions(db).then(data => {
+    ensurePcs12().then(() => getGenerateOptions(db)).then(data => {
       sendJSON(res, 200, data);
     }).catch(e => sendJSON(res, 500, { error: String(e) }));
     return;
@@ -495,10 +500,10 @@ const server = http.createServer((req, res) => {
       if (reqMaxVoices !== undefined && (!Number.isInteger(reqMaxVoices) || reqMaxVoices < 1 || reqMaxVoices > 15)) {
         sendJSON(res, 400, { error: 'maxVoices must be between 1 and 15' }); return;
       }
-      generate(db, {
+      ensurePcs12().then(() => generate(db, {
         forte: body.forte, outputForte: body.outputForte,
         durationSeconds: dur, bpm: reqBpm, maxVoices: reqMaxVoices,
-      }).then(result => {
+      })).then(result => {
         const safeName = result.forte.replace(/[^A-Za-z0-9._-]/g, '_');
         res.writeHead(200, {
           'Content-Type':        'audio/midi',
