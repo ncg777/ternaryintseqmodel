@@ -241,8 +241,8 @@ function strumChords(events: NoteEvent[]): NoteEvent[] {
 
   for (const [, group] of onsByTick) {
     if (group.length < 2) continue;
-    // 50% chance to strum this chord at all
-    if (Math.random() < 0.5) continue;
+    // 80% chance to strum this chord at all
+    if (Math.random() < 0.2) continue;
     // Random step spacing 1–8 for this chord
     const strumStep = randInt(1, 8);
     // Sort by pitch; alternate direction for variety
