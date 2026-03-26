@@ -43,6 +43,7 @@ interface SegRow {
   steps:       number;
   sequence:    string;
   note_count:  number;
+  phase:       number;
 }
 
 interface NoteEvent {
@@ -130,16 +131,22 @@ function forteK(forte: string): number {
   return p ? p.getK() : 0;
 }
 
-/** Decode a segment's sequence into {step, note, type} events using its own scale. */
+/** Decode a segment's sequence into {step, note, type} events using its own scale.
+ * Decoding begins at `startStep` (= segment phase) so wrap-around note-offs
+ * placed by fixNoteOffs before the first note-on are skipped.  Ticks are
+ * normalised to start at 0.  Explicit note-offs are appended for any notes
+ * still sounding when the sequence ends, ensuring clean playback. */
 function decodeSegment(
   sequence: string[],
   scale: number[],
   baseIdx: number,
+  startStep = 0,
 ): { events: NoteEvent[]; minNote: number; maxNote: number; noteOnCount: number } {
   const events: NoteEvent[] = [];
   let minNote = 127, maxNote = 0, noteOnCount = 0;
+  const sounding = new Set<number>();
 
-  for (let step = 0; step < sequence.length; step++) {
+  for (let step = startStep; step < sequence.length; step++) {
     if (sequence[step] === '0') continue;
     const trits = toBalancedTernary(BigInt(sequence[step]));
     for (let t = 0; t < trits.length; t++) {
@@ -148,14 +155,22 @@ function decodeSegment(
       if (scaleIdx < 0 || scaleIdx >= scale.length) continue;
       const midiNote = scale[scaleIdx];
       if (trits[t] === 1) {
-        events.push({ tick: step, note: midiNote, type: 'on' });
+        events.push({ tick: step - startStep, note: midiNote, type: 'on' });
         noteOnCount++;
+        sounding.add(midiNote);
         if (midiNote < minNote) minNote = midiNote;
         if (midiNote > maxNote) maxNote = midiNote;
       } else {
-        events.push({ tick: step, note: midiNote, type: 'off' });
+        events.push({ tick: step - startStep, note: midiNote, type: 'off' });
+        sounding.delete(midiNote);
       }
     }
+  }
+
+  // Append note-offs for any notes still sounding at segment end
+  const endTick = sequence.length - startStep;
+  for (const note of sounding) {
+    events.push({ tick: endTick, note, type: 'off' });
   }
 
   if (noteOnCount === 0) { minNote = 60; maxNote = 60; }
@@ -443,7 +458,7 @@ export async function generate(
   const candidates = segsDb.prepare(`
     SELECT id, source, start_step, end_step, trit_lo, trit_hi,
            forte, octave, bpm, numerator, denominator, steps, sequence,
-           note_count
+           note_count, COALESCE(phase, 0) AS phase
     FROM segments
     WHERE note_count >= 12
       AND forte IN (${ph})
@@ -535,13 +550,13 @@ export async function generate(
         const baseA = segA.octave * forteK(segA.forte);
         const baseB = segB.octave * forteK(segB.forte);
 
-        const decA = decodeSegment(seqA, scaleA, baseA);
-        const decB = decodeSegment(seqB, scaleB, baseB);
+        const decA = decodeSegment(seqA, scaleA, baseA, segA.phase);
+        const decB = decodeSegment(seqB, scaleB, baseB, segB.phase);
         if (decA.noteOnCount === 0 && decB.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
-        const strA = stretchEvents(decA.events, stretch, seqA.length);
-        const strB = stretchEvents(decB.events, stretch, seqB.length);
+        const strA = stretchEvents(decA.events, stretch, seqA.length - segA.phase);
+        const strB = stretchEvents(decB.events, stretch, seqB.length - segB.phase);
 
         const centerA = (decA.minNote + decA.maxNote) / 2;
         const centerB = (decB.minNote + decB.maxNote) / 2;
@@ -567,11 +582,11 @@ export async function generate(
                     ?? buildScale(seg.forte);
         const base = seg.octave * forteK(seg.forte);
 
-        const dec = decodeSegment(seq, scale, base);
+        const dec = decodeSegment(seq, scale, base, seg.phase);
         if (dec.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
-        const str = stretchEvents(dec.events, stretch, seq.length);
+        const str = stretchEvents(dec.events, stretch, seq.length - seg.phase);
 
         let events = str.events;
         const center = (dec.minNote + dec.maxNote) / 2;

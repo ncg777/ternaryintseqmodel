@@ -12,6 +12,7 @@
  *   note_density   REAL     — fraction of non-zero steps (0–1)
  *   unique_pitches INTEGER  — distinct trit positions that fired a note-on
  *   polyphony_avg  REAL     — mean simultaneously-sounding notes per step
+ *   phase          INTEGER  — step index of the first note-on in the sequence
  */
 
 import Database   from 'better-sqlite3';
@@ -46,6 +47,7 @@ const toAdd: [string, string][] = [
   ['note_density',   'REAL    NOT NULL DEFAULT 0'],
   ['unique_pitches', 'INTEGER NOT NULL DEFAULT 0'],
   ['polyphony_avg',  'REAL    NOT NULL DEFAULT 0'],
+  ['phase',          'INTEGER NOT NULL DEFAULT -1'],
 ];
 
 for (const [col, def] of toAdd) {
@@ -63,6 +65,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_seg_note_count     ON segments (note_cou
 db.exec('CREATE INDEX IF NOT EXISTS idx_seg_note_density   ON segments (note_density)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_seg_unique_pitches ON segments (unique_pitches)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_seg_polyphony_avg  ON segments (polyphony_avg)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_seg_phase          ON segments (phase)');
 
 // ── Metric computation ────────────────────────────────────────────────────────
 
@@ -71,19 +74,24 @@ function computeMetrics(seq: string[]): {
   noteDensity:   number;
   uniquePitches: number;
   polyphonyAvg:  number;
+  phase:         number;
 } {
   let noteCount    = 0;
   let nonZeroSteps = 0;
   const pitchSet   = new Set<number>();
   const sounding   = new Set<number>();
   let soundingSum  = 0;
+  let phase        = 0;
+  let phaseFound   = false;
 
-  for (const raw of seq) {
+  for (let stepIdx = 0; stepIdx < seq.length; stepIdx++) {
+    const raw = seq[stepIdx];
     if (raw !== '0') {
       nonZeroSteps++;
       const trits = toBalancedTernary(BigInt(raw));
       for (let i = 0; i < trits.length; i++) {
         if (trits[i] === 1) {
+          if (!phaseFound) { phase = stepIdx; phaseFound = true; }
           noteCount++;
           pitchSet.add(i);
           sounding.add(i);
@@ -100,6 +108,7 @@ function computeMetrics(seq: string[]): {
     noteDensity:   seq.length ? nonZeroSteps / seq.length : 0,
     uniquePitches: pitchSet.size,
     polyphonyAvg:  seq.length ? soundingSum / seq.length : 0,
+    phase,
   };
 }
 
@@ -107,11 +116,11 @@ function computeMetrics(seq: string[]): {
 
 interface IdSeqRow { id: number; sequence: string }
 
-// Rows that need populating: those where note_count is still 0 (default)
-// but have a non-trivial sequence (avoids touching rows that genuinely have
-// 0 note-ons, which shouldn't exist in a well-formed DB, but is harmless).
+// Rows that need populating: those where phase is still -1 (default).
+// This covers both new DBs (note_count also 0) and existing DBs where
+// the phase column was just added.
 const total: number = (db.prepare(
-  'SELECT COUNT(*) AS n FROM segments WHERE note_count = 0'
+  'SELECT COUNT(*) AS n FROM segments WHERE phase = -1'
 ).get() as { n: number }).n;
 
 if (total === 0) {
@@ -123,7 +132,7 @@ if (total === 0) {
 console.log(`\nBackfilling metrics for ${total.toLocaleString()} rows …`);
 
 const fetchBatch = db.prepare<{ limit: number; offset: number }, IdSeqRow>(
-  'SELECT id, sequence FROM segments WHERE note_count = 0 LIMIT :limit OFFSET :offset',
+  'SELECT id, sequence FROM segments WHERE phase = -1 LIMIT :limit OFFSET :offset',
 );
 
 const updateStmt = db.prepare(`
@@ -131,7 +140,8 @@ const updateStmt = db.prepare(`
   SET note_count     = @noteCount,
       note_density   = @noteDensity,
       unique_pitches = @uniquePitches,
-      polyphony_avg  = @polyphonyAvg
+      polyphony_avg  = @polyphonyAvg,
+      phase          = @phase
   WHERE id = @id
 `);
 
@@ -141,6 +151,7 @@ interface UpdateRow {
   noteDensity:   number;
   uniquePitches: number;
   polyphonyAvg:  number;
+  phase:         number;
 }
 
 const flushBatch = db.transaction((rows: UpdateRow[]) => {
