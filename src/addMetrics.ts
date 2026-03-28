@@ -124,7 +124,8 @@ const total: number = (db.prepare(
 ).get() as { n: number }).n;
 
 if (total === 0) {
-  console.log('\nAll rows already have metrics. Nothing to do.');
+  console.log('\nAll rows already have metrics. Refreshing stats_cache …');
+  rebuildStatsCache();
   db.close();
   process.exit(0);
 }
@@ -184,24 +185,59 @@ const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 console.log(`\n\nDone in ${elapsed}s. ${processed.toLocaleString()} rows updated.`);
 
 // Rebuild stats_cache so the server benefits from the update immediately.
-process.stdout.write('Rebuilding stats_cache … ');
-db.exec(`CREATE TABLE IF NOT EXISTS stats_cache (
+rebuildStatsCache();
+
+db.close();
+
+// ── stats_cache rebuild ───────────────────────────────────────────────────────
+
+function rebuildStatsCache() {
+  process.stdout.write('Rebuilding stats_cache … ');
+  db.exec(`CREATE TABLE IF NOT EXISTS stats_cache (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 )`);
-const cCount   = (db.prepare('SELECT COUNT(*) AS n FROM segments').get() as { n: number }).n;
-const cSources = db.prepare(
-  'SELECT source, COUNT(*) AS count FROM segments GROUP BY source ORDER BY source'
-).all();
-const cFortes  = db.prepare(
-  'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
-).all();
-const cUpsert  = db.prepare('INSERT OR REPLACE INTO stats_cache (key, value) VALUES (?, ?)');
-db.transaction(() => {
-  cUpsert.run('count',   String(cCount));
-  cUpsert.run('sources', JSON.stringify(cSources));
-  cUpsert.run('fortes',  JSON.stringify(cFortes));
-})();
-console.log('done');
+  const cCount   = (db.prepare('SELECT COUNT(*) AS n FROM segments').get() as { n: number }).n;
+  const cSources = db.prepare(
+    'SELECT source, COUNT(*) AS count FROM segments GROUP BY source ORDER BY source'
+  ).all();
+  const cFortes  = db.prepare(
+    'SELECT forte, COUNT(*) AS count FROM segments GROUP BY forte ORDER BY count DESC'
+  ).all();
+  const cGenOptsRows = db.prepare(`
+    SELECT forte, COUNT(*) AS count FROM segments
+    WHERE note_count >= 12 AND forte NOT LIKE '1-%'
+    GROUP BY forte ORDER BY count DESC
+  `).all() as { forte: string; count: number }[];
 
-db.close();
+  const cGenOptsFortes = cGenOptsRows
+    .map(r => ({ forte: r.forte, count: r.count, k: parseInt(r.forte.split('-')[0], 10) || 0 }))
+    .filter(r => r.k >= 3 && r.k <= 8);
+  function _parseForteNum(forte: string): { setNum: number; transpose: number } {
+    const dash = forte.indexOf('-');
+    const rest = forte.slice(dash + 1);
+    const dot  = rest.indexOf('.');
+    const left = dot >= 0 ? rest.slice(0, dot) : rest;
+    return {
+      setNum:    parseInt(left.replace(/[AB]$/i, ''), 10) || 0,
+      transpose: dot >= 0 ? (parseInt(rest.slice(dot + 1), 10) || 0) : 0,
+    };
+  }
+  cGenOptsFortes.sort((a, b) => {
+    if (a.k !== b.k) return a.k - b.k;
+    const pa = _parseForteNum(a.forte);
+    const pb = _parseForteNum(b.forte);
+    if (pa.setNum !== pb.setNum) return pa.setNum - pb.setNum;
+    return pa.transpose - pb.transpose;
+  });
+  const cGenOpts = JSON.stringify({ fortes: cGenOptsFortes });
+
+  const cUpsert  = db.prepare('INSERT OR REPLACE INTO stats_cache (key, value) VALUES (?, ?)');
+  db.transaction(() => {
+    cUpsert.run('count',            String(cCount));
+    cUpsert.run('sources',          JSON.stringify(cSources));
+    cUpsert.run('fortes',           JSON.stringify(cFortes));
+    cUpsert.run('generate_options', cGenOpts);
+  })();
+  console.log('done');
+}

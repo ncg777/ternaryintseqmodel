@@ -388,13 +388,14 @@ export async function generate(
     if (!p) throw new Error(`Unknown forte: ${params.forte}`);
     targetForte = params.forte;
   } else {
-    // Pick a random forte weighted by segment count, cardinality ∈ [3, 8]
-    const rows = segsDb.prepare(`
-      SELECT forte, COUNT(*) AS cnt FROM segments GROUP BY forte
-    `).all() as { forte: string; cnt: number }[];
+    // Pick a random forte weighted by segment count, cardinality ∈ [3, 8].
+    // Use the pre-computed forte counts from the DB index to avoid a full GROUP BY scan.
+    const rows = segsDb.prepare(
+      `SELECT forte, COUNT(*) AS cnt FROM segments GROUP BY forte`
+    ).all() as { forte: string; cnt: number }[];
 
     const eligible = rows.filter(r => {
-      const k = forteK(r.forte);
+      const k = parseInt(r.forte.split('-')[0], 10) || 0;
       return k >= 3 && k <= 8;
     });
     if (eligible.length === 0) throw new Error('No suitable segments found');
@@ -454,6 +455,9 @@ export async function generate(
     throw new Error(`No compatible segments found for forte ${targetForte}`);
 
   // Query only rows with compatible fortes — much faster with idx_seg_forte.
+  // ORDER BY RANDOM() is avoided: it forces a full-table sort (O(N log N)) across
+  // all matching rows.  Instead we fetch without ordering (SQLite streams via the
+  // forte index) then shuffle in JS, which is O(N) and orders of magnitude faster.
   const ph = compatibleFortes.map(() => '?').join(',');
   const candidates = segsDb.prepare(`
     SELECT id, source, start_step, end_step, trit_lo, trit_hi,
@@ -462,12 +466,14 @@ export async function generate(
     FROM segments
     WHERE note_count >= 12
       AND forte IN (${ph})
-    ORDER BY RANDOM()
     LIMIT 5000
   `).all(compatibleFortes) as SegRow[];
 
   if (candidates.length === 0)
     throw new Error(`No compatible segments found for forte ${targetForte}`);
+
+  // Shuffle here so the median-cluster pick isn't always the same IDs.
+  shuffle(candidates);
 
   // Use stored note_count for pool ranking (avoids re-parsing every sequence)
   const withCounts = candidates.map(seg => ({ seg, noteOns: seg.note_count }));

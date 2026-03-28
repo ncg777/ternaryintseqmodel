@@ -27,7 +27,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { PCS12 } from 'ultra-mega-enumerator';
-import { generate, getGenerateOptions } from './generate.ts';
+import { generate } from './generate.ts';
 import { toBalancedTernary } from './utils.ts';
 
 // Eagerly start PCS12 init so it's warmed before the first request hits.
@@ -88,7 +88,7 @@ const _statsCache = (() => {
   const rows = db.prepare('SELECT key, value FROM stats_cache').all() as { key: string; value: string }[];
   const map  = new Map(rows.map(r => [r.key, r.value]));
   if (!map.has('count') || !map.has('sources') || !map.has('fortes')) return null;
-  return { count: Number(map.get('count')), sources: map.get('sources')!, fortes: map.get('fortes')! };
+  return { count: Number(map.get('count')), sources: map.get('sources')!, fortes: map.get('fortes')!, generateOptions: map.get('generate_options') ?? null };
 })();
 
 if (_statsCache) {
@@ -193,9 +193,10 @@ const stmtFortes = db.prepare<[], { forte: string; count: number }>(
 // Running these aggregate queries at startup blocked the process for several seconds on large DBs.
 
 // Pre-populate caches from stats_cache (all three are instant reads if available).
-let _cachedCount:   number | null = _statsCache?.count   ?? null;
-let _cachedSources: string | null = _statsCache?.sources ?? null;
-let _cachedFortes:  string | null = _statsCache?.fortes  ?? null;
+let _cachedCount:          number | null = _statsCache?.count           ?? null;
+let _cachedSources:        string | null = _statsCache?.sources         ?? null;
+let _cachedFortes:         string | null = _statsCache?.fortes          ?? null;
+let _cachedGenerateOptions: string | null = _statsCache?.generateOptions ?? null;
 
 function cachedCount(): number {
   if (_cachedCount === null) {
@@ -217,6 +218,45 @@ function cachedFortes(): string {
     console.log(`  computed fortes: ${JSON.parse(_cachedFortes).length}`);
   }
   return _cachedFortes;
+}
+
+function parseForteNum(forte: string): { setNum: number; transpose: number } {
+  const dash = forte.indexOf('-');
+  const rest = forte.slice(dash + 1);
+  const dot  = rest.indexOf('.');
+  const left = dot >= 0 ? rest.slice(0, dot) : rest;
+  return {
+    setNum:    parseInt(left.replace(/[AB]$/i, ''), 10) || 0,
+    transpose: dot >= 0 ? (parseInt(rest.slice(dot + 1), 10) || 0) : 0,
+  };
+}
+
+const stmtGenOpts = HAS_METRICS
+  ? db.prepare<[], { forte: string; count: number }>(`
+      SELECT forte, COUNT(*) AS count FROM segments
+      WHERE note_count >= 12 AND forte NOT LIKE '1-%'
+      GROUP BY forte ORDER BY count DESC
+    `)
+  : null;
+
+function cachedGenerateOptions(): string {
+  if (_cachedGenerateOptions === null) {
+    if (!stmtGenOpts) { _cachedGenerateOptions = JSON.stringify({ fortes: [] }); return _cachedGenerateOptions; }
+    const rows = stmtGenOpts.all() as { forte: string; count: number }[];
+    const fortes = rows
+      .map(r => ({ forte: r.forte, count: r.count, k: parseInt(r.forte.split('-')[0], 10) || 0 }))
+      .filter(r => r.k >= 3 && r.k <= 8);
+    fortes.sort((a, b) => {
+      if (a.k !== b.k) return a.k - b.k;
+      const pa = parseForteNum(a.forte);
+      const pb = parseForteNum(b.forte);
+      if (pa.setNum !== pb.setNum) return pa.setNum - pb.setNum;
+      return pa.transpose - pb.transpose;
+    });
+    _cachedGenerateOptions = JSON.stringify({ fortes });
+    console.log(`  computed generate-options: ${fortes.length} fortes`);
+  }
+  return _cachedGenerateOptions;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -469,11 +509,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Generate options
+  // Generate options (cached; does not block the event loop)
   if (path_ === '/api/generate-options') {
-    ensurePcs12().then(() => getGenerateOptions(db)).then(data => {
-      sendJSON(res, 200, data);
-    }).catch(e => sendJSON(res, 500, { error: String(e) }));
+    send(res, 200, cachedGenerateOptions(), 'application/json', 3600);
     return;
   }
 
@@ -543,9 +581,13 @@ server.listen(PORT, () => {
   if (!_statsCache) {
     setImmediate(() => {
       cachedCount();
-      setTimeout(() => cachedSources(), 200);
-      setTimeout(() => cachedFortes(),  600);
+      setTimeout(() => cachedSources(),         200);
+      setTimeout(() => cachedFortes(),          600);
+      setTimeout(() => cachedGenerateOptions(), 1200);
     });
+  } else if (_cachedGenerateOptions === null) {
+    // stats_cache exists but predates the generate_options key — compute once in background
+    setImmediate(() => cachedGenerateOptions());
   }
 });
 
