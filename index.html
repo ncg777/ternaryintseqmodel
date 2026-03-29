@@ -458,6 +458,19 @@
   #gen-panel select { min-width: 160px; }
   #gen-panel input[type=range] { width: 140px; accent-color: var(--accent); }
 
+  /* Search inputs used for generator combos */
+  #gen-panel .gen-search {
+    min-width: 160px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 6px;
+  }
+
   #gen-btn {
     padding: 7px 18px;
     border-radius: 6px;
@@ -506,11 +519,13 @@
 
 <div id="gen-panel">
   <div>
-    <label for="gen-forte">Source Scale (Forte)</label><br>
+    <label for="gen-forte-search">Source Scale (Forte)</label><br>
+    <input id="gen-forte-search" class="gen-search" type="text" placeholder="Search scales…" autocomplete="off">
     <select id="gen-forte"><option value="">Random</option></select>
   </div>
   <div>
-    <label for="gen-output-forte">Output Scale</label><br>
+    <label for="gen-output-forte-search">Output Scale</label><br>
+    <input id="gen-output-forte-search" class="gen-search" type="text" placeholder="Search output scales…" autocomplete="off" disabled>
     <select id="gen-output-forte" disabled><option value="">Same as source</option></select>
   </div>
   <div>
@@ -1082,24 +1097,46 @@ async function startPlayback(sequence, forte, bpm, denominator, octave, playBtn)
 
 // ── Ambient generator ─────────────────────────────────────────────────────────
 
-const genToggle      = document.getElementById('gen-toggle');
-const genPanel       = document.getElementById('gen-panel');
-const genForte       = document.getElementById('gen-forte');
-const genOutputForte = document.getElementById('gen-output-forte');
-const genBpm         = document.getElementById('gen-bpm');
-const genBpmLbl      = document.getElementById('gen-bpm-label');
-const genVoices      = document.getElementById('gen-voices');
-const genVoicesLbl   = document.getElementById('gen-voices-label');
-const genDur         = document.getElementById('gen-dur');
+const genToggle             = document.getElementById('gen-toggle');
+const genPanel              = document.getElementById('gen-panel');
+const genForte              = document.getElementById('gen-forte');
+const genForteSearch        = document.getElementById('gen-forte-search');
+const genOutputForte        = document.getElementById('gen-output-forte');
+const genOutputForteSearch  = document.getElementById('gen-output-forte-search');
+const genBpm                = document.getElementById('gen-bpm');
+const genBpmLbl             = document.getElementById('gen-bpm-label');
+const genVoices             = document.getElementById('gen-voices');
+const genVoicesLbl          = document.getElementById('gen-voices-label');
+const genDur                = document.getElementById('gen-dur');
 const genDurLbl      = document.getElementById('gen-dur-label');
 const genBtn         = document.getElementById('gen-btn');
 const genResult      = document.getElementById('gen-result');
 let genForteOptions  = [];
 
+function filterSelectByQuery(selectEl, query) {
+  if (!selectEl) return;
+  const q = String(query || '').toLowerCase().trim();
+  for (const opt of Array.from(selectEl.options)) {
+    const txt = (opt.textContent || opt.value || '').toLowerCase();
+    opt.hidden = q ? !txt.includes(q) : false;
+  }
+}
+
+if (genForteSearch) {
+  genForteSearch.addEventListener('input', () => filterSelectByQuery(genForte, genForteSearch.value));
+  genForteSearch.addEventListener('keydown', e => { if (e.key === 'ArrowDown') { genForte.focus(); e.preventDefault(); } });
+}
+if (genOutputForteSearch) {
+  genOutputForteSearch.addEventListener('input', () => filterSelectByQuery(genOutputForte, genOutputForteSearch.value));
+  genOutputForteSearch.addEventListener('keydown', e => { if (e.key === 'ArrowDown') { genOutputForte.focus(); e.preventDefault(); } });
+}
+
 genToggle.addEventListener('click', () => genPanel.classList.toggle('open'));
 
 genForte.addEventListener('change', () => {
   genOutputForte.innerHTML = '<option value="">Same as source</option>';
+  // clear/disable the output search until we populate options
+  if (genOutputForteSearch) { genOutputForteSearch.value = ''; genOutputForteSearch.disabled = true; }
   const sel = genForte.value;
   if (!sel) { genOutputForte.disabled = true; return; }
   const entry = genForteOptions.find(f => f.forte === sel);
@@ -1112,6 +1149,7 @@ genForte.addEventListener('change', () => {
     genOutputForte.appendChild(opt);
   }
   genOutputForte.disabled = false;
+  if (genOutputForteSearch) { genOutputForteSearch.disabled = false; filterSelectByQuery(genOutputForte, genOutputForteSearch.value); }
 });
 
 genBpm.addEventListener('input', () => {
@@ -1131,12 +1169,17 @@ async function loadGenOptions() {
     if (!r.ok) return;
     const { fortes } = await r.json();
     genForteOptions = sortByForteNum(fortes);
+    // reset existing options then populate (keeps idempotent)
+    if (genForte) genForte.innerHTML = '<option value="">Random</option>';
     for (const f of genForteOptions) {
       const opt = document.createElement('option');
       opt.value = f.forte;
       opt.textContent = `${f.forte}  (k=${f.k}, ${f.count} segs)`;
       genForte.appendChild(opt);
     }
+    // initialise search inputs
+    if (genForteSearch) { genForteSearch.value = ''; filterSelectByQuery(genForte, ''); }
+    if (genOutputForteSearch) { genOutputForteSearch.value = ''; genOutputForteSearch.disabled = true; }
   } catch {}
 }
 

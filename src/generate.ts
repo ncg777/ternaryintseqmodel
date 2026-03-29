@@ -132,10 +132,11 @@ function forteK(forte: string): number {
 }
 
 /** Decode a segment's sequence into {step, note, type} events using its own scale.
- * Decoding begins at `startStep` (= segment phase) so wrap-around note-offs
- * placed by fixNoteOffs before the first note-on are skipped.  Ticks are
- * normalised to start at 0.  Explicit note-offs are appended for any notes
- * still sounding when the sequence ends, ensuring clean playback. */
+ * The sequence is rotated so decoding begins at `startStep` (the stored phase).
+ * This ensures wrap-around note-offs inserted by `fixNoteOffs` are included
+ * at the end of the decoded timeline and that the decoded length equals the
+ * original sequence length.  Ticks are normalised to start at 0.
+ */
 function decodeSegment(
   sequence: string[],
   scale: number[],
@@ -146,31 +147,44 @@ function decodeSegment(
   let minNote = 127, maxNote = 0, noteOnCount = 0;
   const sounding = new Set<number>();
 
-  for (let step = startStep; step < sequence.length; step++) {
-    if (sequence[step] === '0') continue;
-    const trits = toBalancedTernary(BigInt(sequence[step]));
+  const N = sequence.length;
+  if (N === 0) return { events, minNote: 60, maxNote: 60, noteOnCount: 0 };
+
+  // Build a rotated view of the sequence that starts at `startStep`.
+  // rotated[i] === sequence[(startStep + i) % N]
+  for (let r = 0; r < N; r++) {
+    const stepIdx = (startStep + r) % N;
+    const raw = sequence[stepIdx];
+    if (raw === '0') {
+      sounding.size; // no-op to keep consistent flow
+      continue;
+    }
+    const trits = toBalancedTernary(BigInt(raw));
     for (let t = 0; t < trits.length; t++) {
       if (trits[t] === 0) continue;
       const scaleIdx = baseIdx + t;
       if (scaleIdx < 0 || scaleIdx >= scale.length) continue;
       const midiNote = scale[scaleIdx];
       if (trits[t] === 1) {
-        events.push({ tick: step - startStep, note: midiNote, type: 'on' });
+        events.push({ tick: r, note: midiNote, type: 'on' });
         noteOnCount++;
         sounding.add(midiNote);
         if (midiNote < minNote) minNote = midiNote;
         if (midiNote > maxNote) maxNote = midiNote;
       } else {
-        events.push({ tick: step - startStep, note: midiNote, type: 'off' });
+        events.push({ tick: r, note: midiNote, type: 'off' });
         sounding.delete(midiNote);
       }
     }
   }
 
-  // Append note-offs for any notes still sounding at segment end
-  const endTick = sequence.length - startStep;
-  for (const note of sounding) {
-    events.push({ tick: endTick, note, type: 'off' });
+  // Append explicit note-offs for any notes still sounding (safety).
+  // These will occur at tick == N (i.e., just after the decoded sequence).
+  if (sounding.size > 0) {
+    const endTick = N;
+    for (const note of sounding) {
+      events.push({ tick: endTick, note, type: 'off' });
+    }
   }
 
   if (noteOnCount === 0) { minNote = 60; maxNote = 60; }
@@ -561,8 +575,8 @@ export async function generate(
         if (decA.noteOnCount === 0 && decB.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
-        const strA = stretchEvents(decA.events, stretch, seqA.length - segA.phase);
-        const strB = stretchEvents(decB.events, stretch, seqB.length - segB.phase);
+        const strA = stretchEvents(decA.events, stretch, seqA.length);
+        const strB = stretchEvents(decB.events, stretch, seqB.length);
 
         const centerA = (decA.minNote + decA.maxNote) / 2;
         const centerB = (decB.minNote + decB.maxNote) / 2;
@@ -592,7 +606,7 @@ export async function generate(
         if (dec.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
-        const str = stretchEvents(dec.events, stretch, seq.length - seg.phase);
+        const str = stretchEvents(dec.events, stretch, seq.length);
 
         let events = str.events;
         const center = (dec.minNote + dec.maxNote) / 2;
