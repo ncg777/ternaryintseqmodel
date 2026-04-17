@@ -131,34 +131,37 @@ function forteK(forte: string): number {
   return p ? p.getK() : 0;
 }
 
-/** Decode a segment's sequence into {step, note, type} events using its own scale.
- * The sequence is rotated so decoding begins at `startStep` (the stored phase).
- * This ensures wrap-around note-offs inserted by `fixNoteOffs` are included
- * at the end of the decoded timeline and that the decoded length equals the
- * original sequence length.  Ticks are normalised to start at 0.
+/** Median of a sorted numeric array. */
+function medianOf(sorted: number[]): number {
+  if (sorted.length === 0) return 60;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+/**
+ * Decode a segment's sequence into {tick, note, type} events using its scale.
+ * Ticks correspond directly to sequence step indices (no rotation).
+ * Callers should use seg.phase to delay placement so the first note-on aligns
+ * with the desired cursor position (see applyPhaseOffset).
  */
 function decodeSegment(
   sequence: string[],
   scale: number[],
   baseIdx: number,
-  startStep = 0,
-): { events: NoteEvent[]; minNote: number; maxNote: number; noteOnCount: number } {
+): { events: NoteEvent[]; minNote: number; maxNote: number; noteOnCount: number; medianNote: number } {
   const events: NoteEvent[] = [];
   let minNote = 127, maxNote = 0, noteOnCount = 0;
   const sounding = new Set<number>();
+  const noteOns: number[] = [];
 
   const N = sequence.length;
-  if (N === 0) return { events, minNote: 60, maxNote: 60, noteOnCount: 0 };
+  if (N === 0) return { events, minNote: 60, maxNote: 60, noteOnCount: 0, medianNote: 60 };
 
-  // Build a rotated view of the sequence that starts at `startStep`.
-  // rotated[i] === sequence[(startStep + i) % N]
   for (let r = 0; r < N; r++) {
-    const stepIdx = (startStep + r) % N;
-    const raw = sequence[stepIdx];
-    if (raw === '0') {
-      sounding.size; // no-op to keep consistent flow
-      continue;
-    }
+    const raw = sequence[r];
+    if (raw === '0') continue;
     const trits = toBalancedTernary(BigInt(raw));
     for (let t = 0; t < trits.length; t++) {
       if (trits[t] === 0) continue;
@@ -168,6 +171,7 @@ function decodeSegment(
       if (trits[t] === 1) {
         events.push({ tick: r, note: midiNote, type: 'on' });
         noteOnCount++;
+        noteOns.push(midiNote);
         sounding.add(midiNote);
         if (midiNote < minNote) minNote = midiNote;
         if (midiNote > maxNote) maxNote = midiNote;
@@ -178,17 +182,18 @@ function decodeSegment(
     }
   }
 
-  // Append explicit note-offs for any notes still sounding (safety).
-  // These will occur at tick == N (i.e., just after the decoded sequence).
+  // Append explicit note-offs for any notes still sounding at the end.
   if (sounding.size > 0) {
-    const endTick = N;
     for (const note of sounding) {
-      events.push({ tick: endTick, note, type: 'off' });
+      events.push({ tick: N, note, type: 'off' });
     }
   }
 
+  noteOns.sort((a, b) => a - b);
+  const medianNote = medianOf(noteOns);
+
   if (noteOnCount === 0) { minNote = 60; maxNote = 60; }
-  return { events, minNote, maxNote, noteOnCount };
+  return { events, minNote, maxNote, noteOnCount, medianNote };
 }
 
 // ── Transformations ───────────────────────────────────────────────────────────
@@ -199,6 +204,17 @@ function stretchEvents(events: NoteEvent[], factor: number, origSteps: number): 
     events: events.map(e => ({ ...e, tick: e.tick * factor })),
     steps: origSteps * factor,
   };
+}
+
+/**
+ * Drop events that fall before phaseOffset (pre-phase note-offs / silence)
+ * and shift remaining ticks so the first note-on starts at tick 0.
+ */
+function applyPhaseOffset(events: NoteEvent[], phaseOffset: number): NoteEvent[] {
+  if (phaseOffset <= 0) return events;
+  return events
+    .filter(e => e.tick >= phaseOffset)
+    .map(e => ({ ...e, tick: e.tick - phaseOffset }));
 }
 
 /** Pitch-flip around center. */
@@ -570,24 +586,32 @@ export async function generate(
         const baseA = segA.octave * forteK(segA.forte);
         const baseB = segB.octave * forteK(segB.forte);
 
-        const decA = decodeSegment(seqA, scaleA, baseA, segA.phase);
-        const decB = decodeSegment(seqB, scaleB, baseB, segB.phase);
+        const decA = decodeSegment(seqA, scaleA, baseA);
+        const decB = decodeSegment(seqB, scaleB, baseB);
         if (decA.noteOnCount === 0 && decB.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
         const strA = stretchEvents(decA.events, stretch, seqA.length);
         const strB = stretchEvents(decB.events, stretch, seqB.length);
 
-        const centerA = (decA.minNote + decA.maxNote) / 2;
-        const centerB = (decB.minNote + decB.maxNote) / 2;
+        // Delay placement by phase so the first note-on lands at cursor;
+        // pre-phase events (wrap-around note-offs / silence) are discarded.
+        const phaseOffsetA = segA.phase * stretch;
+        const phaseOffsetB = segB.phase * stretch;
+        const activeA = applyPhaseOffset(strA.events, phaseOffsetA);
+        const activeB = applyPhaseOffset(strB.events, phaseOffsetB);
+        const durationA = strA.steps - phaseOffsetA;
+        const durationB = strB.steps - phaseOffsetB;
 
-        const eventsA = shiftEvents(strA.events, Math.round(globalCenter - centerA));
-        const eventsB = shiftEvents(strB.events, Math.round(globalCenter - centerB));
+        // Shift so each segment's median note lands at globalCenter, then
+        // split there — this preserves density (≈ half the notes per side).
+        const eventsA = shiftEvents(activeA, Math.round(globalCenter - decA.medianNote));
+        const eventsB = shiftEvents(activeB, Math.round(globalCenter - decB.medianNote));
 
         const lowA = takeLow(eventsA, globalCenter);
         const highB = takeHigh(eventsB, globalCenter);
         const combined = strumChords([...lowA, ...highB]);
-        const duration = Math.min(strA.steps, strB.steps);
+        const duration = Math.min(durationA, durationB);
 
         for (const e of combined) {
           timeline.push({ ...e, tick: e.tick + cursor });
@@ -602,24 +626,28 @@ export async function generate(
                     ?? buildScale(seg.forte);
         const base = seg.octave * forteK(seg.forte);
 
-        const dec = decodeSegment(seq, scale, base, seg.phase);
+        const dec = decodeSegment(seq, scale, base);
         if (dec.noteOnCount === 0) break;
 
         const stretch = randInt(2, 6);
         const str = stretchEvents(dec.events, stretch, seq.length);
 
-        let events = str.events;
-        const center = (dec.minNote + dec.maxNote) / 2;
+        // Delay placement by phase so the first note-on lands at cursor.
+        const phaseOffset = seg.phase * stretch;
+        let events = applyPhaseOffset(str.events, phaseOffset);
+        const duration = str.steps - phaseOffset;
+
+        // Use median note as center for flip and shift operations.
         if (Math.random() < 0.3) {
-          events = flipEvents(events, center);
+          events = flipEvents(events, dec.medianNote);
         }
-        events = shiftEvents(events, Math.round(globalCenter - center));
+        events = shiftEvents(events, Math.round(globalCenter - dec.medianNote));
         events = strumChords(events);
 
         for (const e of events) {
           timeline.push({ ...e, tick: e.tick + cursor });
         }
-        voices.push({ start: cursor, duration: str.steps });
+        voices.push({ start: cursor, duration });
         segPlacementCount++;
       }
     }
