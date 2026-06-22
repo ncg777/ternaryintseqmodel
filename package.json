@@ -12,7 +12,7 @@
   "dependencies": {
     "@tonejs/midi": "^2.0.28",
     "better-sqlite3": "^12.6.2",
-    "ultra-mega-enumerator": "2026.3.4"
+    "ultra-mega-enumerator": "2026.6.20"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
