@@ -1,6 +1,6 @@
 {
   "name": "ternaryintseqmodel",
-  "version": "2.0.0",
+  "version": "2026.7.4",
   "description": "MIDI segment extraction, analysis, and ambient composition using balanced-ternary encoding",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
   "dependencies": {
     "@tonejs/midi": "^2.0.28",
     "better-sqlite3": "^12.6.2",
-    "ultra-mega-enumerator": "2026.6.20"
+    "ultra-mega-enumerator": "2026.7.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

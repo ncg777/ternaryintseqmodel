@@ -25,9 +25,10 @@ import http from 'http';
 import fs   from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Worker } from 'worker_threads';
 import Database from 'better-sqlite3';
 import { PCS12 } from 'ultra-mega-enumerator';
-import { generate } from './generate.ts';
+import type { GenerateParams, GenerateResult } from './generate.ts';
 import { toBalancedTernary } from './utils.ts';
 
 // Eagerly start PCS12 init so it's warmed before the first request hits.
@@ -95,6 +96,74 @@ if (_statsCache) {
   console.log(`  stats_cache loaded: ${_statsCache.count.toLocaleString()} segments`);
 } else {
   console.warn('  stats_cache not found — run  npm run add-metrics  to cache aggregate queries.');
+}
+
+// ── Generation worker thread ──────────────────────────────────────────────────
+// generate() is CPU-bound (decoding segments, building scales, encoding MIDI).
+// Running it on the main thread blocks the event loop and makes the UI
+// unresponsive.  Offload it to a Worker Thread so other HTTP requests keep
+// being served while a song is generated.
+
+let genWorker: Worker | null = null;
+let genReqId = 0;
+const genPending = new Map<number, { resolve: (r: GenerateResult) => void; reject: (e: Error) => void }>();
+
+function ensureGenWorker(): Worker {
+  if (genWorker) return genWorker;
+
+  genWorker = new Worker(new URL('./generateWorker.ts', import.meta.url), {
+    workerData: { dbPath: DB_PATH },
+    execArgv: ['--import', 'tsx'],
+  });
+
+  genWorker.on('message', (msg: {
+    id: number;
+    result?: { midi: Uint8Array; bpm: number; forte: string; segments: number };
+    error?: string;
+  }) => {
+    const pending = genPending.get(msg.id);
+    if (!pending) return;
+    genPending.delete(msg.id);
+    if (msg.error) {
+      pending.reject(new Error(msg.error));
+    } else if (!msg.result) {
+      pending.reject(new Error('Generation worker returned an empty result'));
+    } else {
+      const midi = Buffer.from(
+        msg.result.midi.buffer,
+        msg.result.midi.byteOffset,
+        msg.result.midi.byteLength,
+      );
+      pending.resolve({ ...msg.result, midi });
+    }
+  });
+
+  genWorker.on('error', (err) => {
+    console.error('Generation worker error:', err);
+    for (const p of genPending.values()) p.reject(err);
+    genPending.clear();
+    genWorker = null;
+  });
+
+  genWorker.on('exit', (code) => {
+    if (code !== 0) {
+      const err = new Error(`Generation worker exited with code ${code}`);
+      console.error(err.message);
+      for (const p of genPending.values()) p.reject(err);
+      genPending.clear();
+    }
+    genWorker = null;
+  });
+
+  return genWorker;
+}
+
+function generateInWorker(params: GenerateParams): Promise<GenerateResult> {
+  return new Promise((resolve, reject) => {
+    const id = ++genReqId;
+    genPending.set(id, { resolve, reject });
+    ensureGenWorker().postMessage({ id, params });
+  });
 }
 
 // ── Prepared statements ───────────────────────────────────────────────────────
@@ -538,10 +607,10 @@ const server = http.createServer((req, res) => {
       if (reqMaxVoices !== undefined && (!Number.isInteger(reqMaxVoices) || reqMaxVoices < 1 || reqMaxVoices > 15)) {
         sendJSON(res, 400, { error: 'maxVoices must be between 1 and 15' }); return;
       }
-      ensurePcs12().then(() => generate(db, {
+      generateInWorker({
         forte: body.forte, outputForte: body.outputForte,
         durationSeconds: dur, bpm: reqBpm, maxVoices: reqMaxVoices,
-      })).then(result => {
+      }).then(result => {
         const safeName = result.forte.replace(/[^A-Za-z0-9._-]/g, '_');
         res.writeHead(200, {
           'Content-Type':        'audio/midi',

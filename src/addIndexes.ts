@@ -61,6 +61,10 @@ const indexes: { name: string; ddl: string }[] = [
     ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_note_count ON segments (note_count)',
   },
   {
+    name: 'idx_seg_forte_note_count',
+    ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_forte_note_count ON segments (forte, note_count)',
+  },
+  {
     name: 'idx_seg_note_density',
     ddl:  'CREATE INDEX IF NOT EXISTS idx_seg_note_density ON segments (note_density)',
   },

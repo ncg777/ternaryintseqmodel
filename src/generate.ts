@@ -401,6 +401,19 @@ function encodeMidi(events: NoteEvent[], bpm: number, numerator: number, denomin
 
 // ── Generation Pipeline ───────────────────────────────────────────────────────
 
+interface ForteCount { forte: string; count: number; k?: number }
+
+/** Read pre-computed forte counts from stats_cache if available. */
+function getCachedForteCounts(segsDb: InstanceType<typeof Database>): ForteCount[] | null {
+  try {
+    const row = segsDb.prepare("SELECT value FROM stats_cache WHERE key = 'fortes'").get() as { value: string } | undefined;
+    if (!row) return null;
+    return JSON.parse(row.value) as ForteCount[];
+  } catch {
+    return null;
+  }
+}
+
 export async function generate(
   segsDb: InstanceType<typeof Database>,
   params: GenerateParams,
@@ -419,22 +432,24 @@ export async function generate(
     targetForte = params.forte;
   } else {
     // Pick a random forte weighted by segment count, cardinality ∈ [3, 8].
-    // Use the pre-computed forte counts from the DB index to avoid a full GROUP BY scan.
-    const rows = segsDb.prepare(
+    // Prefer the pre-computed stats_cache; the GROUP BY fallback is very slow
+    // on multi-million-row tables even with a forte index.
+    const cached = getCachedForteCounts(segsDb);
+    const rows: ForteCount[] = cached ?? (segsDb.prepare(
       `SELECT forte, COUNT(*) AS cnt FROM segments GROUP BY forte`
-    ).all() as { forte: string; cnt: number }[];
+    ).all() as { forte: string; cnt: number }[]).map(r => ({ forte: r.forte, count: r.cnt }));
 
     const eligible = rows.filter(r => {
-      const k = parseInt(r.forte.split('-')[0], 10) || 0;
+      const k = r.k ?? (parseInt(r.forte.split('-')[0], 10) || 0);
       return k >= 3 && k <= 8;
     });
     if (eligible.length === 0) throw new Error('No suitable segments found');
 
-    const totalWeight = eligible.reduce((s, r) => s + r.cnt, 0);
+    const totalWeight = eligible.reduce((s, r) => s + r.count, 0);
     let pick = Math.random() * totalWeight;
     targetForte = eligible[0].forte;
     for (const r of eligible) {
-      pick -= r.cnt;
+      pick -= r.count;
       if (pick <= 0) { targetForte = r.forte; break; }
     }
   }
@@ -463,11 +478,14 @@ export async function generate(
       ? targetPcsSet
       : new Set(PCS12.parseForte(outputForteName)!.asSequence() as number[]);
 
-  // Pre-compute compatible forte strings using the forte index so the main
-  // query hits only a small fraction of the table instead of all 16M rows.
-  const distinctFortesInDb = segsDb.prepare(
-    `SELECT DISTINCT forte FROM segments WHERE forte NOT LIKE '1-%'`
-  ).all() as { forte: string }[];
+  // Pre-compute compatible forte strings.  Use stats_cache when available to
+  // avoid a full-table DISTINCT scan on multi-million-row databases.
+  const cachedFortes = getCachedForteCounts(segsDb);
+  const distinctFortesInDb = cachedFortes
+    ? cachedFortes.map(r => ({ forte: r.forte }))
+    : segsDb.prepare(
+        `SELECT DISTINCT forte FROM segments WHERE forte NOT LIKE '1-%'`
+      ).all() as { forte: string }[];
 
   const compatibleFortes = distinctFortesInDb
     .filter(({ forte }) => {
@@ -484,20 +502,52 @@ export async function generate(
   if (compatibleFortes.length === 0)
     throw new Error(`No compatible segments found for forte ${targetForte}`);
 
-  // Query only rows with compatible fortes — much faster with idx_seg_forte.
-  // ORDER BY RANDOM() is avoided: it forces a full-table sort (O(N log N)) across
-  // all matching rows.  Instead we fetch without ordering (SQLite streams via the
-  // forte index) then shuffle in JS, which is O(N) and orders of magnitude faster.
-  const ph = compatibleFortes.map(() => '?').join(',');
-  const candidates = segsDb.prepare(`
+  // Query compatible segments.  A single `forte IN (...) AND note_count >= 12`
+  // query can force SQLite into a slow plan on huge tables, so we query each
+  // forte separately using idx_seg_forte and merge the results.
+  const CANDIDATE_LIMIT = 5000;
+  const compatibleSet = new Set(compatibleFortes);
+  const forteCounts = new Map<string, number>();
+  if (cachedFortes) {
+    for (const r of cachedFortes) {
+      if (compatibleSet.has(r.forte)) forteCounts.set(r.forte, r.count);
+    }
+  }
+  const totalCompat = [...forteCounts.values()].reduce((a, b) => a + b, 0) || compatibleFortes.length;
+
+  // Query by forte only (idx_seg_forte is fast), then filter note_count in JS.
+  // The `note_count >= 12` predicate is not selective enough for SQLite to use
+  // the simple indexes efficiently on huge tables; a composite index on
+  // (forte, note_count) would make the filtered query instant, but until that
+  // index exists we fetch a sample per forte and drop sparse segments here.
+  const stmtByForte = segsDb.prepare(`
     SELECT id, source, start_step, end_step, trit_lo, trit_hi,
            forte, octave, bpm, numerator, denominator, steps, sequence,
            note_count, COALESCE(phase, 0) AS phase
     FROM segments
-    WHERE note_count >= 12
-      AND forte IN (${ph})
-    LIMIT 5000
-  `).all(compatibleFortes) as SegRow[];
+    WHERE forte = ?
+    LIMIT ?
+  `);
+
+  const candidates: SegRow[] = [];
+  for (const forte of compatibleFortes) {
+    const count = forteCounts.get(forte) ?? 1;
+    const want = Math.max(1, Math.ceil((CANDIDATE_LIMIT * count) / totalCompat));
+    // Fetch a small sample per forte and filter note_count in JS.  The
+    // `note_count >= 12` predicate is unusably slow without a composite
+    // (forte, note_count) index, but fetching a few hundred rows by forte
+    // alone is fast because idx_seg_forte is a compact index.
+    const fetchLimit = Math.min(count, Math.max(want, 100), 200);
+    const rows = stmtByForte.all(forte, fetchLimit) as SegRow[];
+    const filtered = rows.filter(r => r.note_count >= 12);
+    if (filtered.length > want) filtered.length = want;
+    candidates.push(...filtered);
+  }
+  // Trim back if the proportional allocation overshot the desired total.
+  if (candidates.length > CANDIDATE_LIMIT) {
+    shuffle(candidates);
+    candidates.length = CANDIDATE_LIMIT;
+  }
 
   if (candidates.length === 0)
     throw new Error(`No compatible segments found for forte ${targetForte}`);
@@ -701,7 +751,6 @@ export async function generate(
   const resultForte = outputForteName;
 
   // ── 6. Encode MIDI ─────────────────────────────────────────────────────
-
   const midi = encodeMidi(timeline, bpm, numerator, denominator);
 
   return {
